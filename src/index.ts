@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { FreeeClient } from "@freee-automation/freee-mcp/client.js";
+import { FreeeClient } from "../lib/freee/client.js";
 import { parseAuditArgs } from "./cli.js";
 import { runAudit } from "./runner.js";
 import { buildSheetData, sheetDataToCsv } from "./sheets.js";

@@ -1,4 +1,4 @@
-import type { Deal } from "@freee-automation/shared";
+import type { Deal } from "../lib/freee/types.js";
 import { describe, expect, it } from "vitest";
 import { checkReceiptConsistency, parseVisionResponse, type ReceiptOCR } from "./vision.js";
 

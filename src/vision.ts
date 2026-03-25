@@ -1,4 +1,4 @@
-import type { Deal } from "@freee-automation/shared";
+import type { Deal } from "../lib/freee/types.js";
 import type { AuditItem, AuditResult } from "./checks.js";
 
 export interface ReceiptOCR {

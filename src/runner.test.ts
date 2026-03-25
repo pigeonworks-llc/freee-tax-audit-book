@@ -1,5 +1,5 @@
-import type { FreeeClient } from "@freee-automation/freee-mcp/client.js";
-import type { Deal, WalletTransaction } from "@freee-automation/shared";
+import type { FreeeClient } from "../lib/freee/client.js";
+import type { Deal, WalletTransaction } from "../lib/freee/types.js";
 import { describe, expect, it } from "vitest";
 import { type AuditDeps, runAudit } from "./runner.js";
 

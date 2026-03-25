@@ -1,4 +1,4 @@
-import type { FreeeClient } from "@freee-automation/freee-mcp/client.js";
+import type { FreeeClient } from "../lib/freee/client.js";
 import {
   type AuditResult,
   checkDuplicateDeals,

@@ -1,4 +1,4 @@
-import type { Deal, WalletTransaction } from "@freee-automation/shared";
+import type { Deal, WalletTransaction } from "../lib/freee/types.js";
 
 export interface AuditItem {
   id: number;
