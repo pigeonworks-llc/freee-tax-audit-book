@@ -1,13 +1,39 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { FreeeClient } from "../lib/freee/client.js";
+import { generateAnnualReport, parseMonthlyResult, toMonthlyResult } from "./annual-report.js";
 import { parseAuditArgs } from "./cli.js";
 import { runAudit } from "./runner.js";
 import { buildSheetData, sheetDataToCsv } from "./sheets.js";
 import { type AnthropicLike, checkReceiptConsistency, type DealWithOCR, ocrReceipt } from "./vision.js";
 
 async function main() {
+  const cliArgsEarly = parseAuditArgs();
+
+  // Annual report mode: aggregate monthly JSON files
+  if (cliArgsEarly.annualMode) {
+    const jsonDir = resolve(cliArgsEarly.jsonDir ?? ".");
+    if (!existsSync(jsonDir)) {
+      console.error(`[tax-audit] JSON directory not found: ${jsonDir}`);
+      process.exit(1);
+    }
+    const jsonFiles = readdirSync(jsonDir)
+      .filter((f: string) => f.startsWith("audit-results-") && f.endsWith(".json"))
+      .sort();
+    if (jsonFiles.length === 0) {
+      console.error(`[tax-audit] No monthly result files found in ${jsonDir}`);
+      process.exit(1);
+    }
+    const months = jsonFiles.map((f: string) => parseMonthlyResult(readFileSync(join(jsonDir, f), "utf-8")));
+    const annual = generateAnnualReport(cliArgsEarly.period, months);
+    const outPath = resolve(cliArgsEarly.outPath);
+    writeFileSync(outPath, annual.markdown);
+    console.error(`[tax-audit] Annual report written to ${outPath}`);
+    console.log(annual.markdown);
+    return;
+  }
+
   const companyId = Number(process.env.FREEE_COMPANY_ID);
   if (!companyId) {
     console.error("FREEE_COMPANY_ID is required");
@@ -22,7 +48,7 @@ async function main() {
     clientSecret: process.env.FREEE_CLIENT_SECRET,
   });
 
-  const cliArgs = parseAuditArgs();
+  const cliArgs = cliArgsEarly;
 
   // Build Anthropic client if API key available
   let anthropic: AnthropicLike | undefined;
@@ -110,6 +136,16 @@ async function main() {
   writeFileSync(outPath, report.markdown);
   console.error(`[tax-audit] Report written to ${outPath}`);
 
+  // Save monthly result as JSON for annual aggregation
+  if (cliArgs.saveJsonDir) {
+    const jsonDir = resolve(cliArgs.saveJsonDir);
+    mkdirSync(jsonDir, { recursive: true });
+    const monthlyResult = toMonthlyResult(cliArgs.period, results);
+    const jsonPath = resolve(jsonDir, `audit-results-${cliArgs.period}.json`);
+    writeFileSync(jsonPath, JSON.stringify(monthlyResult, null, 2));
+    console.error(`[tax-audit] JSON written: ${jsonPath}`);
+  }
+
   if (cliArgs.exportSheets) {
     const sheetData = buildSheetData(results, cliArgs.period, dealToWalletTxnId);
     const csvMap = sheetDataToCsv(sheetData);
@@ -145,3 +181,4 @@ export { buildSheetData, sheetDataToCsv } from "./sheets.js";
 export { InvoiceCache } from "./invoice-cache.js";
 export { checkInvoiceRegistration, extractRegistrationNumber, queryNtaApi } from "./invoice-check.js";
 export { checkReceiptConsistency, ocrReceipt } from "./vision.js";
+export { generateAnnualReport, parseMonthlyResult, toMonthlyResult } from "./annual-report.js";

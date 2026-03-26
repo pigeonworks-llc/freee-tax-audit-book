@@ -9,6 +9,9 @@ export interface AuditCliArgs {
   exportSheets: boolean;
   outPath: string;
   dupCachePath: string;
+  saveJsonDir?: string;
+  annualMode: boolean;
+  jsonDir?: string;
 }
 
 export function parseAuditArgs(argv?: string[], now?: Date): AuditCliArgs {
@@ -19,6 +22,9 @@ export function parseAuditArgs(argv?: string[], now?: Date): AuditCliArgs {
   const fullCheck = args.includes("--full-check");
   const enableVision = args.includes("--vision");
   const exportSheets = args.includes("--sheets");
+  const annualMode = args.includes("--annual");
+  const saveJsonDir = process.env.AUDIT_JSON_DIR;
+  const jsonDir = process.env.AUDIT_JSON_DIR;
 
   // Fiscal year starts July 1
   const fiscalYearStart = date.getMonth() >= 6 ? `${date.getFullYear()}-07-01` : `${date.getFullYear() - 1}-07-01`;
@@ -47,5 +53,8 @@ export function parseAuditArgs(argv?: string[], now?: Date): AuditCliArgs {
     exportSheets,
     outPath,
     dupCachePath,
+    saveJsonDir,
+    annualMode,
+    jsonDir,
   };
 }
