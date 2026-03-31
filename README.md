@@ -101,6 +101,6 @@ MIT
 
 ## 関連
 
-- 書籍: freeeで実現する 税務調査リスクマネジメント（KDP）
+- 書籍: [freeeで備える税務調査リスクマネジメント](https://www.amazon.co.jp/dp/B0GV23G8KF)（Amazon Kindle）
 - [freee API リファレンス](https://developer.freee.co.jp/docs/accounting)
 - [freee ヘルプセンター](https://support.freee.co.jp/)
