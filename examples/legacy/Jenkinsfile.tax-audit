@@ -10,10 +10,11 @@ pipeline {
     triggers {
         cron('H 9 1 * *') // Monthly on 1st at ~9am
     }
+    // Legacy example only. Prefer examples/crontab.example or examples/github-actions/tax-audit.yml.
     environment {
-        FREEE_COMPANY_ID = '10799541'
-        FREEE_CLIENT_ID = '634466446256351'
-        FREEE_TOKEN_PATH = "${env.HOME}/.config/gmail-fetcher/freee_token.json"
+        FREEE_COMPANY_ID = 'YOUR_COMPANY_ID'
+        FREEE_CLIENT_ID = 'YOUR_CLIENT_ID'
+        FREEE_TOKEN_PATH = "${env.HOME}/.config/freee/token.json"
     }
     stages {
         stage('Setup') {

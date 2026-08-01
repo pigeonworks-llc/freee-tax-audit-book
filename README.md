@@ -105,10 +105,17 @@ receipt_exemptions:
     # ... 詳細は config/receipt-rules.yaml を参照
 ```
 
-## CI/CD
+## スケジュール実行の例
 
-`Jenkinsfile.tax-audit` で毎月1日に自動実行するパイプラインが定義されています。
-GitHub Actions や cron でも同様の仕組みを構築できます（書籍第12章参照）。
+特定の CI 製品に依存しません。書籍第12章の説明に合わせ、次の例を同梱しています。
+
+| パス | 内容 |
+|------|------|
+| `examples/crontab.example` | 手元マシン / 常時起動ホストの cron 例 |
+| `examples/github-actions/tax-audit.yml` | GitHub Actions の月次実行例 |
+| `examples/legacy/Jenkinsfile.tax-audit` | 旧 Jenkins 例（参考のみ） |
+
+Secrets やパスは環境に合わせて書き換えてください。
 
 ## テスト
 

@@ -1,0 +1,19 @@
+# Example: monthly tax-audit on the 1st at 09:00 (Asia/Tokyo machine local time).
+# Copy paths and env loading to match your host.
+#
+# 0 9 1 * *  /home/you/bin/run-tax-audit.sh >> /var/log/tax-audit.log 2>&1
+
+# --- run-tax-audit.sh (example) ---
+# #!/usr/bin/env bash
+# set -euo pipefail
+# cd /path/to/freee-tax-audit-book
+# export FREEE_COMPANY_ID=...
+# export FREEE_CLIENT_ID=...
+# export FREEE_CLIENT_SECRET=...   # prefer env from a secret manager, not this file
+# export FREEE_TOKEN_PATH=$HOME/.config/freee/token.json
+# export ANTHROPIC_API_KEY=...     # optional; needed for --vision
+# export DUP_CACHE_PATH=$HOME/.cache/tax-audit/duplicate-check.db
+# export RECEIPT_DIR=$HOME/receipts/incoming
+# pnpm install --frozen-lockfile
+# pnpm build
+# node dist/src/index.js "tax-audit-$(date +%Y-%m).md" --monthly --vision
