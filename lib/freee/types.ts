@@ -74,3 +74,15 @@ export interface FreeeToken {
   expires_at: number; // Unix timestamp
   company_id: number;
 }
+
+/**
+ * Tax category available for a company.
+ * Source: GET /api/1/taxes/companies/{company_id}
+ * Prefer this over the deprecated GET /api/1/taxes/codes.
+ */
+export interface CompanyTax {
+  /** tax_code used on deal details */
+  code: number;
+  name: string;
+  name_ja?: string;
+}

@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AccountItem, Deal, FreeeToken, WalletTransaction } from "./types.js";
+import type { AccountItem, CompanyTax, Deal, FreeeToken, WalletTransaction } from "./types.js";
 import type { Tenant } from "./tenant.js";
 
 export interface TrialBalanceItem {
@@ -229,6 +229,31 @@ export class FreeeClient {
     });
     const data = await this.request<{ account_items: AccountItem[] }>(`/api/1/account_items?${params}`);
     return data.account_items;
+  }
+
+  /**
+   * List tax categories available for this company.
+   * Prefer this over deprecated GET /api/1/taxes/codes.
+   * @see https://developer.freee.co.jp/reference/accounting/reference#/Taxes
+   */
+  async listCompanyTaxes(): Promise<CompanyTax[]> {
+    const data = await this.request<{
+      taxes: Array<{
+        code?: number;
+        tax_code?: number;
+        name?: string;
+        name_ja?: string;
+      }>;
+    }>(`/api/1/taxes/companies/${this.companyId}`);
+
+    const result: CompanyTax[] = [];
+    for (const t of data.taxes ?? []) {
+      const code = t.code ?? t.tax_code;
+      const name = t.name_ja ?? t.name ?? "";
+      if (code == null || !name) continue;
+      result.push({ code, name, name_ja: t.name_ja });
+    }
+    return result;
   }
 
   async listDeals(params?: {

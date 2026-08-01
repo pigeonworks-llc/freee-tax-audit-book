@@ -37,6 +37,11 @@ function mockFreee(): FreeeClient {
     listDeals: async () => deals,
     listUnregisteredTransactions: async () => txns,
     listAllWalletTransactions: async () => txns,
+    listCompanyTaxes: async () => [
+      { code: 2, name: "課税仕入（税率不明）" },
+      { code: 21, name: "課税仕入 10%" },
+      { code: 1, name: "課税売上 10%" },
+    ],
     getReceipt: async () => ({ id: 10, status: "confirmed", created_at: "2025-08-15", mime_type: "application/pdf" }),
     downloadReceipt: async () => Buffer.from("fake-pdf"),
   } as unknown as FreeeClient;
