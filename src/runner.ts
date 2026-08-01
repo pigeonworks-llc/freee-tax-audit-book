@@ -5,6 +5,8 @@ import {
   checkReceiptCoverage,
   checkStaleTransactions,
   checkTaxCategory,
+  FALLBACK_DOMESTIC_TAX_CODES,
+  resolveDomesticTaxCodes,
   type ReceiptExemptionRules,
 } from "./checks.js";
 import { DuplicateCache } from "./duplicate-cache.js";
@@ -83,6 +85,19 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
     to_date: endDate,
   });
   console.error(`[tax-audit] ${allWalletTxns.length} wallet transactions`);
+
+  // Company tax codes for E3 (prefer taxes/companies over hardcoded table)
+  let domesticTaxCodes = FALLBACK_DOMESTIC_TAX_CODES;
+  try {
+    console.error("[tax-audit] Fetching company tax categories...");
+    const taxes = await client.listCompanyTaxes();
+    domesticTaxCodes = resolveDomesticTaxCodes(taxes);
+    console.error(`[tax-audit] Domestic taxable-purchase codes: ${[...domesticTaxCodes].sort((a, b) => a - b).join(", ")}`);
+  } catch (err: unknown) {
+    console.error(
+      `[tax-audit] listCompanyTaxes failed, using fallback codes: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 
   // Build deal→wallet_txn_id map
   const dealToWalletTxnId = new Map<number, number>();
@@ -307,7 +322,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
     ),
     checkStaleTransactions(txns, now),
     dupeResult,
-    checkTaxCategory(deals, FOREIGN_VENDORS),
+    checkTaxCategory(deals, FOREIGN_VENDORS, domesticTaxCodes),
   ];
 
   if (invoiceResult) {

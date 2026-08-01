@@ -5,7 +5,9 @@ import {
   checkReceiptCoverage,
   checkStaleTransactions,
   checkTaxCategory,
+  FALLBACK_DOMESTIC_TAX_CODES,
   isReceiptExempt,
+  resolveDomesticTaxCodes,
   type ReceiptExemptionRules,
 } from "./checks.js";
 
@@ -213,6 +215,28 @@ describe("E5: checkDuplicateDeals", () => {
   });
 });
 
+describe("resolveDomesticTaxCodes", () => {
+  it("picks 課税仕入 / 課対仕入 codes from company tax list", () => {
+    const codes = resolveDomesticTaxCodes([
+      { code: 1, name: "課税売上 10%" },
+      { code: 21, name: "課税仕入 10%" },
+      { code: 22, name: "課税仕入 8%（軽減）" },
+      { code: 136, name: "対象外" },
+      { code: 99, name: "課対仕入 10%" },
+    ]);
+    expect(codes.has(21)).toBe(true);
+    expect(codes.has(22)).toBe(true);
+    expect(codes.has(99)).toBe(true);
+    expect(codes.has(1)).toBe(false);
+    expect(codes.has(136)).toBe(false);
+  });
+
+  it("falls back when no purchase codes match", () => {
+    const codes = resolveDomesticTaxCodes([{ code: 1, name: "課税売上 10%" }]);
+    expect(codes).toEqual(FALLBACK_DOMESTIC_TAX_CODES);
+  });
+});
+
 describe("E3: checkTaxCategory", () => {
   const foreignVendors = ["aws", "github", "openai", "anthropic"];
 
@@ -233,9 +257,10 @@ describe("E3: checkTaxCategory", () => {
         ],
       }),
     ];
-    const result = checkTaxCategory(deals, foreignVendors);
+    const result = checkTaxCategory(deals, foreignVendors, new Set([21, 22]));
     expect(result.severity).toBe("warning");
     expect(result.items).toHaveLength(1);
+    expect(result.items[0].reason).toContain("請求主体");
   });
 
   it("passes for foreign vendors with non-taxable code", () => {
@@ -255,7 +280,29 @@ describe("E3: checkTaxCategory", () => {
         ],
       }),
     ];
-    const result = checkTaxCategory(deals, foreignVendors);
+    const result = checkTaxCategory(deals, foreignVendors, new Set([21, 22]));
     expect(result.severity).toBe("pass");
+  });
+
+  it("uses company-resolved codes (custom code numbers)", () => {
+    const deals = [
+      makeDeal({
+        id: 1,
+        details: [
+          {
+            id: 1,
+            account_item_id: 100,
+            account_item_name: "通信費",
+            tax_code: 999,
+            amount: 5000,
+            vat: 500,
+            description: "GitHub",
+          },
+        ],
+      }),
+    ];
+    const result = checkTaxCategory(deals, foreignVendors, new Set([999]));
+    expect(result.severity).toBe("warning");
+    expect(result.items[0].description).toContain("tax_code=999");
   });
 });

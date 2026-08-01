@@ -173,6 +173,8 @@ export {
   checkReceiptCoverage,
   checkStaleTransactions,
   checkTaxCategory,
+  FALLBACK_DOMESTIC_TAX_CODES,
+  resolveDomesticTaxCodes,
 } from "./checks.js";
 export { parseAuditArgs } from "./cli.js";
 export { generateReport } from "./report.js";

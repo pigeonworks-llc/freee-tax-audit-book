@@ -1,4 +1,4 @@
-import type { Deal, WalletTransaction } from "../lib/freee/types.js";
+import type { CompanyTax, Deal, WalletTransaction } from "../lib/freee/types.js";
 
 export interface AuditItem {
   id: number;
@@ -283,17 +283,55 @@ export function checkDuplicateDeals(deals: Deal[]): AuditResult {
   };
 }
 
-// Domestic taxable purchase codes (課税仕入)
-const DOMESTIC_TAX_CODES = new Set([
-  2,
-  3,
-  21,
-  22,
-  23, // 課税仕入 10%, 8%, etc.
+/**
+ * Fallback domestic taxable-purchase codes when company tax list is unavailable.
+ * These are **examples** only; prefer resolveDomesticTaxCodes() from
+ * GET /api/1/taxes/companies/{company_id}.
+ */
+export const FALLBACK_DOMESTIC_TAX_CODES = new Set([
+  2, // 課税仕入（税率不明）
+  3, // 課税仕入（税率不明）
+  21, // 課税仕入 10%
+  22, // 課税仕入 8%（軽減）
+  23, // 課税仕入 8%（経過措置）
 ]);
 
-/** E3: Check that foreign vendors are not using domestic tax codes. */
-export function checkTaxCategory(deals: Deal[], foreignVendorPatterns: string[]): AuditResult {
+/**
+ * Build the set of tax_code values that mean "通常の国内課税仕入" for this company.
+ * Uses the company tax list from GET /api/1/taxes/companies/{company_id}.
+ *
+ * Matching is name-based (課税仕入 / 課対仕入) so code numbers can differ by company.
+ * Falls back to FALLBACK_DOMESTIC_TAX_CODES if no matching names are found.
+ */
+export function resolveDomesticTaxCodes(taxes: CompanyTax[]): Set<number> {
+  const codes = new Set<number>();
+  for (const t of taxes) {
+    const name = `${t.name_ja ?? ""} ${t.name}`;
+    // freee UI/API may use 課税仕入 or 課対仕入; exclude sales-side codes
+    if (/(課税?仕入|課対仕入)/.test(name) && !/売上/.test(name)) {
+      codes.add(t.code);
+    }
+  }
+  if (codes.size === 0) {
+    return new Set(FALLBACK_DOMESTIC_TAX_CODES);
+  }
+  return codes;
+}
+
+/**
+ * E3: Flag deals whose description matches foreign vendor patterns but use a
+ * domestic taxable-purchase tax_code. This does **not** assert a tax error —
+ * it surfaces candidates that need human review of the service provider and
+ * reverse-charge / consumer telecom rules (see book ch.7).
+ *
+ * @param domesticTaxCodes Prefer resolveDomesticTaxCodes(listCompanyTaxes()).
+ *   Defaults to FALLBACK_DOMESTIC_TAX_CODES for unit tests / offline use.
+ */
+export function checkTaxCategory(
+  deals: Deal[],
+  foreignVendorPatterns: string[],
+  domesticTaxCodes: Set<number> = FALLBACK_DOMESTIC_TAX_CODES,
+): AuditResult {
   const items: AuditItem[] = [];
   const patterns = foreignVendorPatterns.map((p) => new RegExp(p, "i"));
 
@@ -301,14 +339,15 @@ export function checkTaxCategory(deals: Deal[], foreignVendorPatterns: string[])
     for (const detail of d.details) {
       const text = `${detail.description ?? ""} ${detail.account_item_name}`;
       const isForeign = patterns.some((p) => p.test(text));
-      if (isForeign && DOMESTIC_TAX_CODES.has(detail.tax_code)) {
+      if (isForeign && domesticTaxCodes.has(detail.tax_code)) {
         items.push({
           id: d.id,
           date: d.issue_date,
           amount: detail.amount,
           description: `${detail.description ?? detail.account_item_name} (tax_code=${detail.tax_code})`,
           level: "warning",
-          reason: "海外サービスに課税仕入が設定されている（不課税が正しい可能性）",
+          reason:
+            "海外サービス名に国内課税仕入の税区分が設定されている（請求主体・課税関係を確認）",
         });
       }
     }
