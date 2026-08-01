@@ -21,17 +21,27 @@ freee API を使って経理データの品質を自動チェックする仕組�
 
 ### 前提条件
 
-- Node.js 20 以上
-- pnpm
+- **Node.js 20 または 22（LTS）** — `package.json` の `engines` は `>=20 <23`
+  - Node 23+ / 26 では `better-sqlite3` の native ビルドが失敗することがある
+- pnpm 9
 - freee OAuth アプリケーションの作成（Client ID / Client Secret）
 
 ### インストール
 
 ```bash
+# 推奨: fnm / nvm で Node 22 を指定
+# fnm use 22
 pnpm install
 pnpm build
 ```
 
+### 依存のメンテ方針（薄い C クラス）
+
+- この repo は書籍付属のサンプルであり、本番 SLI はない
+- 依存更新は **Mend Renovate Community Cloud（無料 SaaS）** を想定
+  - 設定: `.github/renovate.json`（月次・major 自動 PR なし）
+- self-host Renovate / 週次 Dependabot は使わない
+- security alert が出たら月次バッチか個別 PR で対応する
 ### 環境変数
 
 ```bash

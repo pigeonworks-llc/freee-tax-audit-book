@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Asia/Tokyo",
+  "schedule": ["before 6am on the first day of the month"],
+  "labels": ["dependencies"],
+  "dependencyDashboard": true,
+  "prConcurrentLimit": 3,
+  "rangeStrategy": "bump",
+  "packageRules": [
+    {
+      "description": "Monthly batch of patch updates",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "npm patch (monthly)",
+      "automerge": false
+    },
+    {
+      "description": "Monthly batch of minor updates",
+      "matchUpdateTypes": ["minor"],
+      "groupName": "npm minor (monthly)",
+      "automerge": false
+    },
+    {
+      "description": "Do not auto-open major bumps for appendix sample code",
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Keep Node types on 22.x (engines: >=20 <23)",
+      "matchPackageNames": ["@types/node"],
+      "allowedVersions": "<23"
+    },
+    {
+      "description": "better-sqlite3 major needs human (native/Node ABI)",
+      "matchPackageNames": ["better-sqlite3", "@types/better-sqlite3"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}
