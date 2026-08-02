@@ -2,6 +2,7 @@
   "name": "freee-tax-audit",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "dist/src/index.js",
   "scripts": {
