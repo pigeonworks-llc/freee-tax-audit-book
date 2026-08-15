@@ -59,7 +59,7 @@ describe("E1: checkReceiptCoverage", () => {
       makeDeal({ id: 3, receipts: [] }),
     ];
     const result = checkReceiptCoverage(deals);
-    expect(result.severity).toBe("error");
+    expect(result.severity).toBe("warning");
     expect(result.items).toHaveLength(2);
     expect(result.items[0].id).toBe(2);
     expect(result.items[1].id).toBe(3);
@@ -79,11 +79,11 @@ describe("E1: checkReceiptCoverage", () => {
       makeDeal({ id: 3, amount: 500, receipts: undefined }),
     ];
     const result = checkReceiptCoverage(deals, rules);
-    expect(result.severity).toBe("error");
+    expect(result.severity).toBe("warning");
     const infos = result.items.filter((i) => i.level === "info");
-    const errors = result.items.filter((i) => i.level === "error");
+    const unattached = result.items.filter((i) => i.level === "warning");
     expect(infos).toHaveLength(2); // ¥0 and ¥1
-    expect(errors).toHaveLength(1); // ¥500
+    expect(unattached).toHaveLength(1); // ¥500
   });
 
   it("exempts small amount deals (少額特例)", () => {
@@ -94,9 +94,9 @@ describe("E1: checkReceiptCoverage", () => {
     ];
     const result = checkReceiptCoverage(deals, rules);
     const infos = result.items.filter((i) => i.level === "info");
-    const errors = result.items.filter((i) => i.level === "error");
+    const unattached = result.items.filter((i) => i.level === "warning");
     expect(infos).toHaveLength(1); // ¥9,999 exempt
-    expect(errors).toHaveLength(1); // ¥10,000 not exempt
+    expect(unattached).toHaveLength(1); // ¥10,000 not exempt
   });
 
   it("exempts by account item name", () => {
@@ -115,9 +115,9 @@ describe("E1: checkReceiptCoverage", () => {
     ];
     const result = checkReceiptCoverage(deals, rules);
     const infos = result.items.filter((i) => i.level === "info");
-    const errors = result.items.filter((i) => i.level === "error");
+    const unattached = result.items.filter((i) => i.level === "warning");
     expect(infos).toHaveLength(1);
-    expect(errors).toHaveLength(1);
+    expect(unattached).toHaveLength(1);
   });
 
   it("returns pass when all missing are exempt", () => {
@@ -442,5 +442,68 @@ describe("E3: checkTaxCategory candidate extraction", () => {
     ];
     const result = checkTaxCategory(deals, vendors, new Set([21]));
     expect(result.items[0].description).not.toContain("undefined");
+  });
+});
+
+describe("E1: receipt check configuration", () => {
+  const missing = [makeDeal({ id: 1, amount: 50000, receipts: undefined })];
+
+  it("skips the check entirely when disabled", () => {
+    const result = checkReceiptCoverage(missing, undefined, { enabled: false, unattachedLevel: "warning" });
+    expect(result.severity).toBe("pass");
+    expect(result.items).toHaveLength(0);
+    expect(result.summary).toContain("無効");
+  });
+
+  it("reports unattached deals as warning by default", () => {
+    const result = checkReceiptCoverage(missing);
+    expect(result.severity).toBe("warning");
+    expect(result.items[0].level).toBe("warning");
+  });
+
+  it("keeps the overall severity at pass when the level is info", () => {
+    const result = checkReceiptCoverage(missing, undefined, { enabled: true, unattachedLevel: "info" });
+    expect(result.severity).toBe("pass");
+    expect(result.items[0].level).toBe("info");
+  });
+
+  it("can still be configured to report as error", () => {
+    const result = checkReceiptCoverage(missing, undefined, { enabled: true, unattachedLevel: "error" });
+    expect(result.severity).toBe("error");
+  });
+});
+
+describe("E1: 性質ベース免除", () => {
+  it("exempts deals whose account category is listed", () => {
+    const deals = [
+      makeDeal({
+        id: 1,
+        amount: 50000,
+        receipts: undefined,
+        details: [{ id: 1, account_item_id: 500, account_item_name: "事業主貸", tax_code: 0, amount: 50000, vat: 0 }],
+      }),
+    ];
+    const result = checkReceiptCoverage(deals, {
+      exemptAccountCategories: ["事業主"],
+      accountCategories: new Map([[500, "事業主"]]),
+    });
+    expect(result.severity).toBe("pass");
+    expect(result.items[0].reason).toContain("科目区分免除");
+  });
+
+  it("exempts deals whose memo matches a description pattern", () => {
+    const deals = [makeDeal({ id: 1, amount: 50000, receipts: undefined })];
+    const result = checkReceiptCoverage(deals, {
+      exemptDescriptionPatterns: ["振込手数料"],
+      walletTxnDescriptions: new Map([[1, "振込手数料 SMBC"]]),
+    });
+    expect(result.severity).toBe("pass");
+    expect(result.items[0].reason).toContain("摘要免除");
+  });
+
+  it("does not exempt on amount alone when no threshold is configured", () => {
+    const deals = [makeDeal({ id: 1, amount: 5000, receipts: undefined })];
+    const result = checkReceiptCoverage(deals, { exemptAccountItems: ["旅費交通費"] });
+    expect(result.severity).toBe("warning");
   });
 });

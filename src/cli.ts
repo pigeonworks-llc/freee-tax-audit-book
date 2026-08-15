@@ -14,9 +14,30 @@ export interface AuditCliArgs {
   jsonDir?: string;
 }
 
-export function parseAuditArgs(argv?: string[], now?: Date): AuditCliArgs {
+/** Fiscal year start month used when FISCAL_START_MONTH is unset. */
+export const DEFAULT_FISCAL_START_MONTH = 7;
+
+/**
+ * Read the fiscal year start month (1-12) from the environment.
+ * Anything out of range falls back to the default with a warning, so a typo
+ * cannot silently shift the audit period.
+ */
+export function resolveFiscalStartMonth(raw: string | undefined): number {
+  if (raw == null || raw === "") return DEFAULT_FISCAL_START_MONTH;
+  const month = Number(raw);
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    console.error(
+      `[tax-audit] FISCAL_START_MONTH="${raw}" is not a month between 1 and 12; using ${DEFAULT_FISCAL_START_MONTH}`,
+    );
+    return DEFAULT_FISCAL_START_MONTH;
+  }
+  return month;
+}
+
+export function parseAuditArgs(argv?: string[], now?: Date, fiscalStartMonth?: number): AuditCliArgs {
   const args = argv ?? process.argv.slice(2);
   const date = now ?? new Date();
+  const startMonth = fiscalStartMonth ?? resolveFiscalStartMonth(process.env.FISCAL_START_MONTH);
 
   const isMonthly = args.includes("--monthly");
   const fullCheck = args.includes("--full-check");
@@ -26,8 +47,9 @@ export function parseAuditArgs(argv?: string[], now?: Date): AuditCliArgs {
   const saveJsonDir = process.env.AUDIT_JSON_DIR;
   const jsonDir = process.env.AUDIT_JSON_DIR;
 
-  // Fiscal year starts July 1
-  const fiscalYearStart = date.getMonth() >= 6 ? `${date.getFullYear()}-07-01` : `${date.getFullYear() - 1}-07-01`;
+  // freee の事業所設定の期首月に合わせる。December-start 等も同じ式で成り立つ。
+  const fiscalYear = date.getMonth() + 1 >= startMonth ? date.getFullYear() : date.getFullYear() - 1;
+  const fiscalYearStart = `${fiscalYear}-${String(startMonth).padStart(2, "0")}-01`;
 
   const startDate = isMonthly
     ? fiscalYearStart

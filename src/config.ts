@@ -1,11 +1,23 @@
-import type { DuplicateCheckOptions, ForeignVendor, ReceiptExemptionRules } from "./checks.js";
+import {
+  DEFAULT_RECEIPT_CHECK,
+  type DuplicateCheckOptions,
+  type ForeignVendor,
+  type ReceiptCheckConfig,
+  type ReceiptExemptionRules,
+} from "./checks.js";
 
 /** Shape of config/receipt-rules.yaml. */
 interface RawReceiptRules {
+  receipt_check?: {
+    enabled?: boolean;
+    unattached_level?: string;
+  };
   receipt_exemptions?: {
     small_amount_threshold?: number;
     zero_amount_threshold?: number;
     exempt_account_items?: string[];
+    exempt_account_categories?: string[];
+    exempt_description_patterns?: string[];
   };
 }
 
@@ -37,6 +49,35 @@ export function parseReceiptRules(raw: unknown): ReceiptExemptionRules | undefin
     smallAmountThreshold: ex.small_amount_threshold,
     zeroAmountThreshold: ex.zero_amount_threshold,
     exemptAccountItems: ex.exempt_account_items,
+    exemptAccountCategories: ex.exempt_account_categories,
+    exemptDescriptionPatterns: ex.exempt_description_patterns,
+  };
+}
+
+const UNATTACHED_LEVELS = new Set(["info", "warning", "error"]);
+
+/**
+ * Parse the `receipt_check` section of config/receipt-rules.yaml.
+ * An absent section (older config files) keeps the default behaviour.
+ */
+export function parseReceiptCheckConfig(raw: unknown): ReceiptCheckConfig {
+  if (!isRecord(raw)) return DEFAULT_RECEIPT_CHECK;
+  const section = (raw as RawReceiptRules).receipt_check;
+  if (!section) return DEFAULT_RECEIPT_CHECK;
+
+  const level = section.unattached_level;
+  if (level != null && !UNATTACHED_LEVELS.has(level)) {
+    console.error(
+      `[tax-audit] receipt_check.unattached_level="${level}" is not info/warning/error; using ${DEFAULT_RECEIPT_CHECK.unattachedLevel}`,
+    );
+  }
+
+  return {
+    enabled: section.enabled ?? DEFAULT_RECEIPT_CHECK.enabled,
+    unattachedLevel:
+      level != null && UNATTACHED_LEVELS.has(level)
+        ? (level as ReceiptCheckConfig["unattachedLevel"])
+        : DEFAULT_RECEIPT_CHECK.unattachedLevel,
   };
 }
 

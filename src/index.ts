@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { FreeeClient } from "../lib/freee/client.js";
 import { generateAnnualReport, parseMonthlyResult, toMonthlyResult } from "./annual-report.js";
 import { parseAuditArgs } from "./cli.js";
-import { type AuditRules, parseAuditRules, parseReceiptRules } from "./config.js";
+import { type AuditRules, parseAuditRules, parseReceiptCheckConfig, parseReceiptRules } from "./config.js";
 import { runAudit } from "./runner.js";
 import { buildSheetData, sheetDataToCsv } from "./sheets.js";
 import { type AnthropicLike, checkReceiptConsistency, type DealWithOCR, ocrReceipt } from "./vision.js";
@@ -61,9 +61,12 @@ async function main() {
   // Load receipt exemption rules
   const rulesPath = process.env.RECEIPT_RULES_PATH ?? resolve("config/receipt-rules.yaml");
   let receiptRules: import("./checks.js").ReceiptExemptionRules | undefined;
+  let receiptCheck: import("./checks.js").ReceiptCheckConfig | undefined;
   if (existsSync(rulesPath)) {
     const { parse } = await import("yaml");
-    receiptRules = parseReceiptRules(parse(readFileSync(rulesPath, "utf-8")));
+    const rawReceiptConfig = parse(readFileSync(rulesPath, "utf-8"));
+    receiptRules = parseReceiptRules(rawReceiptConfig);
+    receiptCheck = parseReceiptCheckConfig(rawReceiptConfig);
   }
 
   // Load check tuning (foreign vendor list, duplicate check exclusions)
@@ -83,6 +86,7 @@ async function main() {
     dupCachePath: resolve(cliArgs.dupCachePath),
     anthropic,
     receiptRules,
+    receiptCheck,
     foreignVendors: auditRules.foreignVendors,
     duplicateOptions: auditRules.duplicateOptions,
   });
@@ -177,7 +181,7 @@ export {
   resolveDomesticTaxCodes,
 } from "./checks.js";
 export { parseAuditArgs } from "./cli.js";
-export { parseAuditRules, parseReceiptRules } from "./config.js";
+export { parseAuditRules, parseReceiptCheckConfig, parseReceiptRules } from "./config.js";
 export { generateReport } from "./report.js";
 export { runAudit } from "./runner.js";
 export { buildSheetData, sheetDataToCsv } from "./sheets.js";

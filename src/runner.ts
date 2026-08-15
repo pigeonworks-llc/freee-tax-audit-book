@@ -10,6 +10,7 @@ import {
   FALLBACK_DOMESTIC_TAX_CODES,
   type ForeignVendor,
   resolveDomesticTaxCodes,
+  type ReceiptCheckConfig,
   type ReceiptExemptionRules,
 } from "./checks.js";
 import { DuplicateCache } from "./duplicate-cache.js";
@@ -52,6 +53,8 @@ export interface AuditDeps {
   invoiceCachePath?: string;
   anthropic?: AnthropicLike;
   receiptRules?: ReceiptExemptionRules;
+  /** E1 の有効/無効と報告レベル。未指定なら DEFAULT_RECEIPT_CHECK。 */
+  receiptCheck?: ReceiptCheckConfig;
   /** E3 の照合対象。未指定なら DEFAULT_FOREIGN_VENDORS。 */
   foreignVendors?: ForeignVendor[];
   /** E5 の除外設定。未指定なら除外なし（従来どおり）。 */
@@ -90,10 +93,14 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
   // GET /api/1/deals returns account_item_id only. Without this join every
   // check that keys off the account name (E1 exemptions, E3 matching, E5
   // exclusions) silently sees undefined.
+  const accountCategories = new Map<number, string>();
   try {
     console.error("[tax-audit] Fetching account items...");
     const accountItems = await client.listAccountItems();
     enrichAccountItemNames(deals, accountItems);
+    for (const item of accountItems) {
+      if (item.account_category) accountCategories.set(item.id, item.account_category);
+    }
     console.error(`[tax-audit] ${accountItems.length} account items resolved`);
   } catch (err: unknown) {
     console.error(
@@ -341,7 +348,8 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
   const results: AuditResult[] = [
     checkReceiptCoverage(
       deals,
-      deps.receiptRules ? { ...deps.receiptRules, walletTxnDescriptions } : undefined,
+      deps.receiptRules ? { ...deps.receiptRules, walletTxnDescriptions, accountCategories } : undefined,
+      deps.receiptCheck,
     ),
     checkStaleTransactions(txns, now),
     dupeResult,

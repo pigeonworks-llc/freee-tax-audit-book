@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAuditRules, parseReceiptRules } from "./config.js";
+import { parseAuditRules, parseReceiptCheckConfig, parseReceiptRules } from "./config.js";
 
 describe("parseReceiptRules", () => {
   it("maps yaml keys to rule fields", () => {
@@ -54,5 +54,43 @@ describe("parseAuditRules", () => {
   it("returns an empty object for an absent or malformed file", () => {
     expect(parseAuditRules({})).toEqual({});
     expect(parseAuditRules(null)).toEqual({});
+  });
+});
+
+describe("parseReceiptCheckConfig", () => {
+  it("reads the receipt_check section", () => {
+    expect(parseReceiptCheckConfig({ receipt_check: { enabled: false, unattached_level: "info" } })).toEqual({
+      enabled: false,
+      unattachedLevel: "info",
+    });
+  });
+
+  it("defaults to enabled/warning when the section is absent", () => {
+    expect(parseReceiptCheckConfig({ receipt_exemptions: {} })).toEqual({
+      enabled: true,
+      unattachedLevel: "warning",
+    });
+  });
+
+  it("falls back to warning for an unknown level", () => {
+    expect(parseReceiptCheckConfig({ receipt_check: { unattached_level: "fatal" } }).unattachedLevel).toBe("warning");
+  });
+});
+
+describe("parseReceiptRules: 性質ベース免除", () => {
+  it("reads category and description exemptions", () => {
+    const rules = parseReceiptRules({
+      receipt_exemptions: {
+        exempt_account_categories: ["事業主"],
+        exempt_description_patterns: ["振込手数料"],
+      },
+    });
+    expect(rules?.exemptAccountCategories).toEqual(["事業主"]);
+    expect(rules?.exemptDescriptionPatterns).toEqual(["振込手数料"]);
+  });
+
+  it("still reads the legacy small_amount_threshold key", () => {
+    const rules = parseReceiptRules({ receipt_exemptions: { small_amount_threshold: 10000 } });
+    expect(rules?.smallAmountThreshold).toBe(10000);
   });
 });
