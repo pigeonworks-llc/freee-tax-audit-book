@@ -21,15 +21,52 @@ export interface AuditResult {
 
 /** Receipt exemption rules for checkReceiptCoverage. */
 export interface ReceiptExemptionRules {
-  /** 少額特例: threshold in JPY (tax-inclusive). Deals below this are exempt. */
+  /**
+   * 少額特例: threshold in JPY (tax-inclusive). Deals below this are exempt.
+   *
+   * 少額特例が免除するのは適格請求書の保存要件であって、所得税法・法人税法上の
+   * 領収書等の保存義務ではない。金額だけを理由に一律免除すると本来確認すべき
+   * 取引まで対象外になるため、既定の設定ファイルでは無効にしている。
+   */
   smallAmountThreshold?: number;
   /** ゼロ円・認証チャージ: deals at or below this amount are exempt. */
   zeroAmountThreshold?: number;
   /** 勘定科目名・明細説明で免除（旅費交通費、支払手数料 等）. */
   exemptAccountItems?: string[];
+  /**
+   * 勘定科目カテゴリで免除。事業経費でないもの（事業主貸・事業主借）や
+   * 貸借対照表科目など、証憑の性質自体が異なる取引を区分で外す。
+   * account_item_id → account_category のマップを渡す。
+   */
+  exemptAccountCategories?: string[];
+  /** account_item_id → account_category（exemptAccountCategories の判定に使う）. */
+  accountCategories?: Map<number, string>;
+  /** 摘要に含まれていたら免除する文字列（振込手数料・納付書 等）. */
+  exemptDescriptionPatterns?: string[];
   /** deal_id → wallet_txn description マップ（銀行明細の説明でもマッチ）. */
   walletTxnDescriptions?: Map<number, string>;
 }
+
+/** How checkReceiptCoverage reports a deal with no receipt attached. */
+export interface ReceiptCheckConfig {
+  /**
+   * false にすると E1 を実行しない。
+   *
+   * 電子取引データについて法令が求めるのはデータを保存し調査時に提示できる
+   * ことであって、freee 上で取引と紐付けることではない（規4①・規4③、
+   * 電子帳簿保存法一問一答【電子取引関係】問45・問46）。したがってこの
+   * チェックは freee に証憑を集約する運用を選んだ事業者向けの設定であり、
+   * 未添付は法令違反を意味しない。
+   */
+  enabled: boolean;
+  /** 未添付をどのレベルで報告するか。既定は warning（error ではない）。 */
+  unattachedLevel: "info" | "warning" | "error";
+}
+
+export const DEFAULT_RECEIPT_CHECK: ReceiptCheckConfig = {
+  enabled: true,
+  unattachedLevel: "warning",
+};
 
 /** Convert half-width katakana to full-width for matching bank statement descriptions. */
 function halfToFullKana(s: string): string {
@@ -149,6 +186,15 @@ export function isReceiptExempt(deal: Deal, rules: ReceiptExemptionRules): strin
   if (rules.smallAmountThreshold != null && deal.amount < rules.smallAmountThreshold) {
     return `少額特例（< ¥${rules.smallAmountThreshold.toLocaleString()}）`;
   }
+  if (rules.exemptAccountCategories?.length && rules.accountCategories) {
+    for (const det of deal.details) {
+      const category = rules.accountCategories.get(det.account_item_id);
+      if (category && rules.exemptAccountCategories.includes(category)) {
+        return `科目区分免除（${category}）`;
+      }
+    }
+  }
+
   if (rules.exemptAccountItems) {
     // Check account_item_name and description across all details
     for (const det of deal.details) {
@@ -174,30 +220,64 @@ export function isReceiptExempt(deal: Deal, rules: ReceiptExemptionRules): strin
       }
     }
   }
+
+  if (rules.exemptDescriptionPatterns?.length) {
+    const texts = deal.details.map((det) => det.description ?? "");
+    const wtDesc = rules.walletTxnDescriptions?.get(deal.id);
+    if (wtDesc) texts.push(wtDesc, halfToFullKana(wtDesc));
+    for (const pattern of rules.exemptDescriptionPatterns) {
+      if (texts.some((t) => t.includes(pattern))) {
+        return `摘要免除（${pattern}）`;
+      }
+    }
+  }
+
   return null;
 }
 
-/** E1: Check that all expense deals have at least one receipt attached. */
-export function checkReceiptCoverage(deals: Deal[], rules?: ReceiptExemptionRules): AuditResult {
+/**
+ * E1: Check that all expense deals have at least one receipt attached.
+ *
+ * This measures whether deals and their evidence are linked **inside freee**,
+ * which is an operational choice, not a legal requirement — see
+ * ReceiptCheckConfig. `config` controls whether the check runs at all and how
+ * unattached deals are reported.
+ */
+export function checkReceiptCoverage(
+  deals: Deal[],
+  rules?: ReceiptExemptionRules,
+  config: ReceiptCheckConfig = DEFAULT_RECEIPT_CHECK,
+): AuditResult {
+  if (!config.enabled) {
+    return {
+      check: "receipt_coverage",
+      severity: "pass",
+      summary: "証憑添付チェックは無効（freee への証憑集約を採用する場合に有効化）",
+      items: [],
+    };
+  }
+
+  const level = config.unattachedLevel;
   // Only check expense deals — income (sales/refunds) don't require receipts
   const expenseDeals = deals.filter((d) => d.type === "expense");
   const missing = expenseDeals.filter((d) => !d.receipts || d.receipts.length === 0);
+  const severityForLevel = level === "info" ? "pass" : level;
 
   if (!rules) {
     return {
       check: "receipt_coverage",
-      severity: missing.length > 0 ? "error" : "pass",
+      severity: missing.length > 0 ? severityForLevel : "pass",
       summary:
         missing.length > 0
-          ? `${missing.length}/${expenseDeals.length} 件の支出取引にレシート未添付`
-          : `全 ${expenseDeals.length} 件の支出取引にレシート添付済み`,
+          ? `${missing.length}/${expenseDeals.length} 件の支出取引が freee 上で証憑と未紐付け`
+          : `全 ${expenseDeals.length} 件の支出取引に証憑が紐付け済み`,
       items: missing.map((d) => ({
         id: d.id,
         date: d.issue_date,
         amount: d.amount,
         description: d.details[0]?.description ?? d.details[0]?.account_item_name,
-        level: "error" as const,
-        reason: "レシート未添付",
+        level,
+        reason: "freee 上で証憑と未紐付け",
       })),
     };
   }
@@ -207,37 +287,38 @@ export function checkReceiptCoverage(deals: Deal[], rules?: ReceiptExemptionRule
 
   for (const d of missing) {
     const exemptReason = isReceiptExempt(d, rules);
+    const description = d.details[0]?.description ?? d.details[0]?.account_item_name;
     if (exemptReason) {
       exemptCount++;
       items.push({
         id: d.id,
         date: d.issue_date,
         amount: d.amount,
-        description: d.details[0]?.description ?? d.details[0]?.account_item_name,
+        description,
         level: "info",
-        reason: `レシート免除: ${exemptReason}`,
+        reason: `チェック対象外: ${exemptReason}`,
       });
     } else {
       items.push({
         id: d.id,
         date: d.issue_date,
         amount: d.amount,
-        description: d.details[0]?.description ?? d.details[0]?.account_item_name,
-        level: "error",
-        reason: "レシート未添付",
+        description,
+        level,
+        reason: "freee 上で証憑と未紐付け",
       });
     }
   }
 
-  const errorCount = missing.length - exemptCount;
+  const unattachedCount = missing.length - exemptCount;
 
   return {
     check: "receipt_coverage",
-    severity: errorCount > 0 ? "error" : "pass",
+    severity: unattachedCount > 0 ? severityForLevel : "pass",
     summary:
-      errorCount > 0
-        ? `${errorCount}/${expenseDeals.length} 件の支出取引にレシート未添付（${exemptCount} 件免除）`
-        : `全 ${expenseDeals.length} 件の支出取引 OK（${exemptCount} 件免除、残り添付済み）`,
+      unattachedCount > 0
+        ? `${unattachedCount}/${expenseDeals.length} 件の支出取引が freee 上で証憑と未紐付け（${exemptCount} 件対象外）`
+        : `全 ${expenseDeals.length} 件の支出取引 OK（${exemptCount} 件対象外、残り紐付け済み）`,
     items,
   };
 }
