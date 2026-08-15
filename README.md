@@ -1,21 +1,24 @@
-# freeeで実現する 税務調査リスクマネジメント — 付属コード
+# freeeで備える税務調査リスクマネジメント — 付属コード
 
-書籍「freeeで実現する 税務調査リスクマネジメント」の付属コードリポジトリです。
+書籍「freeeで備える税務調査リスクマネジメント」の付属コードリポジトリです。
 
 ## 概要
 
 freee API を使って経理データの品質を自動チェックする仕組みのソースコードです。
-5つの自動チェック (E1〜E5) とレポート生成、CI/CD パイプライン定義を含みます。
+6つの自動チェック (E1〜E6) とレポート生成、CI/CD パイプライン定義を含みます。
 
 ## チェック一覧
 
 | ID | チェック | 内容 |
 |----|---------|------|
-| E1 | レシート添付漏れ | 経費取引のレシート未添付を検出（免除ルール対応） |
+| E1 | 証憑の紐付け | 経費取引が freee 上で証憑と紐付いているかを検出（免除ルール対応） |
 | E2 | レシート整合性 | Vision API でレシートと取引の金額・日付を照合 |
 | E3 | 消費税区分 | 海外ベンダー名 + 国内課税仕入 tax_code の要確認を検出（事業所別税区分 API 利用） |
 | E4 | 放置取引 | 未登録明細の長期放置を検出（30日/90日） |
 | E5 | 重複取引 | 同一取引の二重計上を検出（Vision 精査） |
+| E6 | インボイス登録番号 | 証憑の登録番号を国税庁の公表 API で検証（Vision 精査） |
+
+E2・E6 は Vision API を使うため任意実行です。
 
 ## セットアップ
 
@@ -53,8 +56,14 @@ export FREEE_TOKEN_PATH=~/.config/freee/token.json
 # 期首月（未指定なら 7）。freee の事業所設定に合わせる
 export FISCAL_START_MONTH=1
 
-# Vision チェック（E2, E5）を使う場合
+# Vision チェック（E2, E5, E6）を使う場合
 export ANTHROPIC_API_KEY=<Anthropic API Key>
+
+# E2 のレシート PDF 置き場（--vision と併用。未指定だと E2 は実行されない）
+export RECEIPT_DIR=./receipts
+
+# 月次結果 JSON の保存先。年次レポート（--annual）の入力になる
+export AUDIT_JSON_DIR=./results
 ```
 
 ### freee OAuth トークンの取得
@@ -83,7 +92,33 @@ RECEIPT_DIR=./receipts node dist/src/index.js report.md --monthly --vision
 
 # CSV も出力
 node dist/src/index.js report.md --monthly --sheets
+
+# キャッシュを無視して重複候補を再検証
+node dist/src/index.js report.md --monthly --full-check
+
+# 年次レポート（AUDIT_JSON_DIR の月次 JSON を集約）
+AUDIT_JSON_DIR=./results node dist/src/index.js annual-report.md --annual
 ```
+
+`--monthly` の実行時に `AUDIT_JSON_DIR` を設定しておくと、月次の結果が
+`audit-results-<period>.json` として保存されます。年度末に `--annual` を実行すると、
+保存された月次 JSON を集約して年次レポートを生成します。
+
+### キャッシュの保存先
+
+重複チェックは `duplicate-check.db`、インボイス登録番号チェックは `invoice-check.db` に
+判定結果をキャッシュします。いずれも既定ではカレントディレクトリに作られるため、CI で
+ワークスペースが実行ごとに消える環境ではキャッシュが効かず、毎回 Vision API と
+国税庁 API を呼び直すことになります。
+
+重複チェックのキャッシュは `DUP_CACHE_PATH` でワークスペース外のパスを指定できます。
+
+```bash
+export DUP_CACHE_PATH=$HOME/.cache/tax-audit/duplicate-check.db
+```
+
+インボイス登録番号チェックのキャッシュは現状 CLI からパスを指定できないため、
+CI で永続化する場合は作業ディレクトリ側をキャッシュ対象にしてください。
 
 ## 消費税区分チェック (E3) と税区分コード
 
