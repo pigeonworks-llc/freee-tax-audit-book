@@ -1,4 +1,5 @@
 import {
+  DEFAULT_DUPLICATE_LEVEL,
   DEFAULT_RECEIPT_CHECK,
   type DuplicateCheckOptions,
   type ForeignVendor,
@@ -27,6 +28,7 @@ interface RawAuditRules {
   duplicate_check?: {
     exclude_account_items?: string[];
     min_amount?: number;
+    level?: string;
   };
 }
 
@@ -54,7 +56,7 @@ export function parseReceiptRules(raw: unknown): ReceiptExemptionRules | undefin
   };
 }
 
-const UNATTACHED_LEVELS = new Set(["info", "warning", "error"]);
+const REPORT_LEVELS = new Set(["info", "warning", "error"]);
 
 /**
  * Parse the `receipt_check` section of config/receipt-rules.yaml.
@@ -66,7 +68,7 @@ export function parseReceiptCheckConfig(raw: unknown): ReceiptCheckConfig {
   if (!section) return DEFAULT_RECEIPT_CHECK;
 
   const level = section.unattached_level;
-  if (level != null && !UNATTACHED_LEVELS.has(level)) {
+  if (level != null && !REPORT_LEVELS.has(level)) {
     console.error(
       `[tax-audit] receipt_check.unattached_level="${level}" is not info/warning/error; using ${DEFAULT_RECEIPT_CHECK.unattachedLevel}`,
     );
@@ -75,7 +77,7 @@ export function parseReceiptCheckConfig(raw: unknown): ReceiptCheckConfig {
   return {
     enabled: section.enabled ?? DEFAULT_RECEIPT_CHECK.enabled,
     unattachedLevel:
-      level != null && UNATTACHED_LEVELS.has(level)
+      level != null && REPORT_LEVELS.has(level)
         ? (level as ReceiptCheckConfig["unattachedLevel"])
         : DEFAULT_RECEIPT_CHECK.unattachedLevel,
   };
@@ -103,9 +105,19 @@ export function parseAuditRules(raw: unknown): AuditRules {
   }
 
   if (duplicate_check) {
+    const level = duplicate_check.level;
+    if (level != null && !REPORT_LEVELS.has(level)) {
+      console.error(
+        `[tax-audit] duplicate_check.level="${level}" is not info/warning/error; using ${DEFAULT_DUPLICATE_LEVEL}`,
+      );
+    }
     rules.duplicateOptions = {
       excludeAccountItems: duplicate_check.exclude_account_items,
       minAmount: duplicate_check.min_amount,
+      level:
+        level != null && REPORT_LEVELS.has(level)
+          ? (level as NonNullable<DuplicateCheckOptions["level"]>)
+          : DEFAULT_DUPLICATE_LEVEL,
     };
   }
 

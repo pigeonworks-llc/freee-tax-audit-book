@@ -10,6 +10,7 @@ import {
   isReceiptExempt,
   normalizeForMatching,
   resolveDomesticTaxCodes,
+  severityForLevel,
   type ReceiptExemptionRules,
 } from "./checks.js";
 
@@ -204,7 +205,7 @@ describe("E5: checkDuplicateDeals", () => {
       }),
     ];
     const result = checkDuplicateDeals(deals);
-    expect(result.severity).toBe("error");
+    expect(result.severity).toBe("warning");
     expect(result.items).toHaveLength(1);
     expect(result.items[0].ids).toContain(1);
     expect(result.items[0].ids).toContain(2);
@@ -359,7 +360,7 @@ describe("E5: checkDuplicateDeals options", () => {
   it("still reports duplicates above the minimum amount", () => {
     const deals = [makeDeal({ id: 1, amount: 5000 }), makeDeal({ id: 2, amount: 5000 })];
     const result = checkDuplicateDeals(deals, { minAmount: 1000 });
-    expect(result.severity).toBe("error");
+    expect(result.severity).toBe("warning");
     expect(result.items[0].ids).toEqual([1, 2]);
   });
 
@@ -505,5 +506,37 @@ describe("E1: 性質ベース免除", () => {
     const deals = [makeDeal({ id: 1, amount: 5000, receipts: undefined })];
     const result = checkReceiptCoverage(deals, { exemptAccountItems: ["旅費交通費"] });
     expect(result.severity).toBe("warning");
+  });
+});
+
+describe("E5: duplicate report level", () => {
+  function dupePair(): Deal[] {
+    return [makeDeal({ id: 1, amount: 5000 }), makeDeal({ id: 2, amount: 5000 })];
+  }
+
+  it("reports duplicates as warning by default", () => {
+    const result = checkDuplicateDeals(dupePair());
+    expect(result.severity).toBe("warning");
+    expect(result.items[0].level).toBe("warning");
+  });
+
+  it("keeps the overall severity at pass when the level is info", () => {
+    const result = checkDuplicateDeals(dupePair(), { level: "info" });
+    expect(result.severity).toBe("pass");
+    expect(result.items[0].level).toBe("info");
+  });
+
+  it("can still be configured to report as error", () => {
+    const result = checkDuplicateDeals(dupePair(), { level: "error" });
+    expect(result.severity).toBe("error");
+    expect(result.items[0].level).toBe("error");
+  });
+});
+
+describe("severityForLevel", () => {
+  it("drops info to pass and keeps the rest", () => {
+    expect(severityForLevel("info")).toBe("pass");
+    expect(severityForLevel("warning")).toBe("warning");
+    expect(severityForLevel("error")).toBe("error");
   });
 });
