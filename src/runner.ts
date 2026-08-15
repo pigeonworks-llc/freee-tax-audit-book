@@ -5,11 +5,13 @@ import {
   checkReceiptCoverage,
   checkStaleTransactions,
   checkTaxCategory,
+  DEFAULT_DUPLICATE_LEVEL,
   type DuplicateCheckOptions,
   enrichAccountItemNames,
   FALLBACK_DOMESTIC_TAX_CODES,
   type ForeignVendor,
   resolveDomesticTaxCodes,
+  severityForLevel,
   type ReceiptCheckConfig,
   type ReceiptExemptionRules,
 } from "./checks.js";
@@ -154,6 +156,9 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
   }
 
   // Run checks
+  // Vision 精査でも同じレベルを使う。Vision も LLM 判定であり「同一取引」を
+  // 確定したことにはならないため、検出経路によってレベルを変えない。
+  const duplicateLevel = deps.duplicateOptions?.level ?? DEFAULT_DUPLICATE_LEVEL;
   const dupeResult = checkDuplicateDeals(deals, {
     ...deps.duplicateOptions,
     walletTxnDescriptions,
@@ -177,7 +182,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
           continue;
         }
         if (cached === "confirmed_dup") {
-          item.level = "error";
+          item.level = duplicateLevel;
           item.reason += "（重複確認済み）";
           refinedItems.push(item);
           continue;
@@ -246,7 +251,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
 
           if (isSame) {
             dupCache.set(ids, "confirmed_dup");
-            item.level = "error";
+            item.level = duplicateLevel;
             item.reason += "（Vision: 同一取引）";
             refinedItems.push(item);
           } else {
@@ -278,7 +283,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
       }
       const uniqueMetas = new Set(metas);
       if (uniqueMetas.size === 1) {
-        item.level = "warning";
+        item.level = duplicateLevel;
         item.reason += "（メタデータ同一、要確認）";
         refinedItems.push(item);
       } else {
@@ -287,8 +292,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
     }
 
     dupeResult.items = refinedItems;
-    dupeResult.severity =
-      refinedItems.length > 0 ? (refinedItems.some((i) => i.level === "error") ? "error" : "warning") : "pass";
+    dupeResult.severity = refinedItems.length > 0 ? severityForLevel(duplicateLevel) : "pass";
     dupeResult.summary =
       refinedItems.length > 0
         ? `${refinedItems.length} グループの重複取引を検出`

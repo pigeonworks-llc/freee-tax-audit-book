@@ -48,6 +48,7 @@ describe("parseAuditRules", () => {
     expect(rules.duplicateOptions).toEqual({
       excludeAccountItems: ["旅費交通費"],
       minAmount: 1000,
+      level: "warning",
     });
   });
 
@@ -92,5 +93,21 @@ describe("parseReceiptRules: 性質ベース免除", () => {
   it("still reads the legacy small_amount_threshold key", () => {
     const rules = parseReceiptRules({ receipt_exemptions: { small_amount_threshold: 10000 } });
     expect(rules?.smallAmountThreshold).toBe(10000);
+  });
+});
+
+describe("parseAuditRules: duplicate_check.level", () => {
+  it("defaults to warning when the level is absent", () => {
+    const rules = parseAuditRules({ duplicate_check: { min_amount: 1000 } });
+    expect(rules.duplicateOptions?.level).toBe("warning");
+  });
+
+  it("reads an explicit level", () => {
+    expect(parseAuditRules({ duplicate_check: { level: "error" } }).duplicateOptions?.level).toBe("error");
+    expect(parseAuditRules({ duplicate_check: { level: "info" } }).duplicateOptions?.level).toBe("info");
+  });
+
+  it("falls back to warning for an unknown level", () => {
+    expect(parseAuditRules({ duplicate_check: { level: "fatal" } }).duplicateOptions?.level).toBe("warning");
   });
 });

@@ -236,6 +236,14 @@ export function isReceiptExempt(deal: Deal, rules: ReceiptExemptionRules): strin
 }
 
 /**
+ * item の level から AuditResult の severity を導く。
+ * severity に info はないため、info 報告は全体としては pass に落とす。
+ */
+export function severityForLevel(level: "info" | "warning" | "error"): "pass" | "warning" | "error" {
+  return level === "info" ? "pass" : level;
+}
+
+/**
  * E1: Check that all expense deals have at least one receipt attached.
  *
  * This measures whether deals and their evidence are linked **inside freee**,
@@ -261,12 +269,11 @@ export function checkReceiptCoverage(
   // Only check expense deals — income (sales/refunds) don't require receipts
   const expenseDeals = deals.filter((d) => d.type === "expense");
   const missing = expenseDeals.filter((d) => !d.receipts || d.receipts.length === 0);
-  const severityForLevel = level === "info" ? "pass" : level;
 
   if (!rules) {
     return {
       check: "receipt_coverage",
-      severity: missing.length > 0 ? severityForLevel : "pass",
+      severity: missing.length > 0 ? severityForLevel(level) : "pass",
       summary:
         missing.length > 0
           ? `${missing.length}/${expenseDeals.length} 件の支出取引が freee 上で証憑と未紐付け`
@@ -314,7 +321,7 @@ export function checkReceiptCoverage(
 
   return {
     check: "receipt_coverage",
-    severity: unattachedCount > 0 ? severityForLevel : "pass",
+    severity: unattachedCount > 0 ? severityForLevel(level) : "pass",
     summary:
       unattachedCount > 0
         ? `${unattachedCount}/${expenseDeals.length} 件の支出取引が freee 上で証憑と未紐付け（${exemptCount} 件対象外）`
@@ -365,6 +372,18 @@ export function checkStaleTransactions(txns: WalletTransaction[], now: Date = ne
   };
 }
 
+/**
+ * 重複候補をどのレベルで報告するかの既定値。
+ *
+ * 重複は機械的に確定できない。同日・同額・同科目の取引が2件あることは、
+ * 二重計上の証拠にも、正当な2件の証拠にもなる。決め手は口座明細やレシートの
+ * 中身であって、グルーピングの一致ではない。実際、カード会社が同額を2回
+ * 請求していれば、取引が2件あるのが正しい状態になる。
+ *
+ * したがって既定は error ではなく warning とし、削除の判断は人に委ねる。
+ */
+export const DEFAULT_DUPLICATE_LEVEL = "warning" as const;
+
 /** Tuning for checkDuplicateDeals. All fields are optional; defaults keep the plain behaviour. */
 export interface DuplicateCheckOptions {
   /**
@@ -376,6 +395,8 @@ export interface DuplicateCheckOptions {
   minAmount?: number;
   /** deal_id → wallet_txn description。取引の説明が空でも銀行明細の摘要で別取引を判別する。 */
   walletTxnDescriptions?: Map<number, string>;
+  /** 重複候補をどのレベルで報告するか。既定は warning。 */
+  level?: "info" | "warning" | "error";
 }
 
 /**
@@ -388,7 +409,7 @@ export interface DuplicateCheckOptions {
  * deals have one, so adding partners cannot hide a real duplicate.
  */
 export function checkDuplicateDeals(deals: Deal[], options: DuplicateCheckOptions = {}): AuditResult {
-  const { excludeAccountItems, minAmount, walletTxnDescriptions } = options;
+  const { excludeAccountItems, minAmount, walletTxnDescriptions, level = DEFAULT_DUPLICATE_LEVEL } = options;
   const groups = new Map<string, number[]>();
   let excludedCount = 0;
 
@@ -425,7 +446,7 @@ export function checkDuplicateDeals(deals: Deal[], options: DuplicateCheckOption
       date,
       amount: Number(amount),
       description: desc,
-      level: "error",
+      level,
       reason: `${ids.length} 件の重複（ID: ${ids.join(", ")}）`,
     });
   }
@@ -434,7 +455,7 @@ export function checkDuplicateDeals(deals: Deal[], options: DuplicateCheckOption
 
   return {
     check: "duplicate_deals",
-    severity: dupes.length > 0 ? "error" : "pass",
+    severity: dupes.length > 0 ? severityForLevel(level) : "pass",
     summary:
       dupes.length > 0
         ? `${dupes.length} グループの重複取引を検出${excludedNote}`
