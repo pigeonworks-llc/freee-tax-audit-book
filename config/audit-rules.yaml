@@ -1,0 +1,63 @@
+# Audit check tuning. Edited during annual/quarterly maintenance (see ch.12).
+# Missing file or missing section = built-in defaults.
+
+# E3 消費税区分チェック: 国外事業者から仕入れているサービスの名前。
+# 名前が銀行明細やカード明細に現れ、かつ税区分が国内課税仕入のとき warning になる。
+# 全角（ＡＷＳ）・大文字小文字は自動で吸収されるため、半角小文字で書けば足りる。
+# pattern は正規表現。表示名を変えたいときだけ name を添える。
+foreign_vendors:
+  # クラウド・インフラ
+  - aws
+  - { pattern: 'google\s*cloud', name: Google Cloud }
+  - azure
+  - cloudflare
+  - vercel
+  - netlify
+  - { pattern: 'digital\s*ocean', name: DigitalOcean }
+  - heroku
+
+  # 開発・AI
+  - github
+  - openai
+  - anthropic
+  - claude
+  - cursor
+  - xai
+  - grok
+  - gamma
+  - superultra
+  - replicate
+  - huggingface
+
+  # SaaS・業務ソフト
+  - microsoft
+  - adobe
+  - zoom
+  - slack
+  - dropbox
+  - notion
+  - figma
+  - canva
+  - atlassian
+  - { pattern: 'apple|itunes', name: Apple / iTunes }
+  - spotify
+  - { pattern: 'meta\s*platforms|facebook', name: Meta Platforms }
+  - linkedin
+  - x\s*corp
+
+  # 決済代行経由（請求主体が代行業者名で表示される）
+  - stripe
+  - paypal
+  - cleverbridge
+  - fastspring
+  - paddle
+  - beatport
+
+# E5 重複取引チェック
+duplicate_check:
+  # 同日に複数発生することが常態の科目。件数だけ多く、実益が乏しいため対象外にする。
+  exclude_account_items:
+    - 旅費交通費
+    - 支払手数料
+  # この金額未満は対象外。数百円の交通費・手数料の偽陽性を抑える。
+  min_amount: 1000

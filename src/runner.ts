@@ -5,7 +5,10 @@ import {
   checkReceiptCoverage,
   checkStaleTransactions,
   checkTaxCategory,
+  type DuplicateCheckOptions,
+  enrichAccountItemNames,
   FALLBACK_DOMESTIC_TAX_CODES,
+  type ForeignVendor,
   resolveDomesticTaxCodes,
   type ReceiptExemptionRules,
 } from "./checks.js";
@@ -15,7 +18,12 @@ import { type InvoiceEntry, checkInvoiceRegistration, extractRegistrationNumber 
 import { type AuditReport, generateReport } from "./report.js";
 import { type AnthropicLike, ocrReceipt } from "./vision.js";
 
-const FOREIGN_VENDORS = [
+/**
+ * Fallback vendor list when config/audit-rules.yaml is absent.
+ * The maintained list lives in that file so readers can update it without
+ * editing TypeScript (see book ch.12 annual maintenance).
+ */
+export const DEFAULT_FOREIGN_VENDORS: ForeignVendor[] = [
   "aws",
   "github",
   "openai",
@@ -27,7 +35,7 @@ const FOREIGN_VENDORS = [
   "superultra",
   "xai",
   "grok",
-  "google\\s*cloud",
+  { pattern: "google\\s*cloud", name: "Google Cloud" },
   "azure",
   "vercel",
   "netlify",
@@ -44,6 +52,10 @@ export interface AuditDeps {
   invoiceCachePath?: string;
   anthropic?: AnthropicLike;
   receiptRules?: ReceiptExemptionRules;
+  /** E3 の照合対象。未指定なら DEFAULT_FOREIGN_VENDORS。 */
+  foreignVendors?: ForeignVendor[];
+  /** E5 の除外設定。未指定なら除外なし（従来どおり）。 */
+  duplicateOptions?: DuplicateCheckOptions;
   httpClient?: typeof fetch;
 }
 
@@ -74,6 +86,20 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
     end_issue_date: endDate,
   });
   console.error(`[tax-audit] ${deals.length} deals`);
+
+  // GET /api/1/deals returns account_item_id only. Without this join every
+  // check that keys off the account name (E1 exemptions, E3 matching, E5
+  // exclusions) silently sees undefined.
+  try {
+    console.error("[tax-audit] Fetching account items...");
+    const accountItems = await client.listAccountItems();
+    enrichAccountItemNames(deals, accountItems);
+    console.error(`[tax-audit] ${accountItems.length} account items resolved`);
+  } catch (err: unknown) {
+    console.error(
+      `[tax-audit] listAccountItems failed, account-name based rules will not apply: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 
   console.error("[tax-audit] Fetching wallet transactions...");
   const txns = await client.listUnregisteredTransactions();
@@ -111,8 +137,20 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
   }
   console.error(`[tax-audit] ${dealToWalletTxnId.size} deals mapped to wallet_txns`);
 
+  // Bank/card statement memo per deal. freee expense deals frequently have an
+  // empty description, so this is the only text E1/E3/E5 can match on.
+  const walletTxnById = new Map(allWalletTxns.map((w) => [w.id, w.description]));
+  const walletTxnDescriptions = new Map<number, string>();
+  for (const [dealId, wtId] of dealToWalletTxnId) {
+    const desc = walletTxnById.get(wtId);
+    if (desc) walletTxnDescriptions.set(dealId, desc);
+  }
+
   // Run checks
-  const dupeResult = checkDuplicateDeals(deals);
+  const dupeResult = checkDuplicateDeals(deals, {
+    ...deps.duplicateOptions,
+    walletTxnDescriptions,
+  });
 
   // Refine duplicate check with Vision API + cache
   const dupCache = new DuplicateCache(dupCachePath);
@@ -303,26 +341,16 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
   const results: AuditResult[] = [
     checkReceiptCoverage(
       deals,
-      deps.receiptRules
-        ? {
-            ...deps.receiptRules,
-            walletTxnDescriptions: new Map(
-              allWalletTxns
-                .map((w) => {
-                  // Find deal mapped to this wallet_txn
-                  for (const [dealId, wtId] of dealToWalletTxnId) {
-                    if (wtId === w.id) return [dealId, w.description] as const;
-                  }
-                  return null;
-                })
-                .filter((x): x is [number, string] => x !== null),
-            ),
-          }
-        : undefined,
+      deps.receiptRules ? { ...deps.receiptRules, walletTxnDescriptions } : undefined,
     ),
     checkStaleTransactions(txns, now),
     dupeResult,
-    checkTaxCategory(deals, FOREIGN_VENDORS, domesticTaxCodes),
+    checkTaxCategory(
+      deals,
+      deps.foreignVendors ?? DEFAULT_FOREIGN_VENDORS,
+      domesticTaxCodes,
+      walletTxnDescriptions,
+    ),
   ];
 
   if (invoiceResult) {

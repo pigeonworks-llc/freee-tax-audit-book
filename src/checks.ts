@@ -1,4 +1,4 @@
-import type { CompanyTax, Deal, WalletTransaction } from "../lib/freee/types.js";
+import type { AccountItem, CompanyTax, Deal, WalletTransaction } from "../lib/freee/types.js";
 
 export interface AuditItem {
   id: number;
@@ -8,6 +8,8 @@ export interface AuditItem {
   description?: string;
   level?: "info" | "warning" | "error";
   reason?: string;
+  /** E3: 判定のきっかけになった海外ベンダー名（本文 第7章の「実行結果の読み方」に対応）。 */
+  matchedVendor?: string;
 }
 
 export interface AuditResult {
@@ -103,6 +105,40 @@ function halfToFullKana(s: string): string {
     }
   }
   return result;
+}
+
+/**
+ * Normalize text for vendor / description matching.
+ *
+ * NFKC folds full-width alphanumerics to half-width, so bank statements that
+ * record `ＰａｙＰａｌ決済` or `ＡＭＡＺＯＮ` match the same patterns as their
+ * half-width form. Lower-casing makes the comparison case-insensitive without
+ * relying on regex flags.
+ *
+ * Kept separate from halfToFullKana(): E1 matches Japanese account names in
+ * half-width katakana, where NFKC would change existing behaviour.
+ */
+export function normalizeForMatching(s: string): string {
+  return s.normalize("NFKC").toLowerCase();
+}
+
+/**
+ * Fill in `account_item_name` on deal details from the account item master.
+ *
+ * GET /api/1/deals returns only `account_item_id`, so every check that reads
+ * `account_item_name` sees undefined unless the names are joined in first.
+ * Mutates and returns the given deals.
+ */
+export function enrichAccountItemNames(deals: Deal[], accountItems: AccountItem[]): Deal[] {
+  const idToName = new Map(accountItems.map((a) => [a.id, a.name]));
+  for (const deal of deals) {
+    for (const det of deal.details) {
+      if (!det.account_item_name) {
+        det.account_item_name = idToName.get(det.account_item_id);
+      }
+    }
+  }
+  return deals;
 }
 
 /** Check if a deal is exempt from receipt requirement. Returns reason or null. */
@@ -248,13 +284,51 @@ export function checkStaleTransactions(txns: WalletTransaction[], now: Date = ne
   };
 }
 
-/** E5: Detect duplicate deals (same date + amount + description). */
-export function checkDuplicateDeals(deals: Deal[]): AuditResult {
+/** Tuning for checkDuplicateDeals. All fields are optional; defaults keep the plain behaviour. */
+export interface DuplicateCheckOptions {
+  /**
+   * 同日に複数発生することが常態の勘定科目（旅費交通費・支払手数料 等）を対象外にする。
+   * enrichAccountItemNames() で科目名が補完されていることが前提。
+   */
+  excludeAccountItems?: string[];
+  /** この金額未満の取引は対象外にする。少額の交通費・手数料の偽陽性を抑える。 */
+  minAmount?: number;
+  /** deal_id → wallet_txn description。取引の説明が空でも銀行明細の摘要で別取引を判別する。 */
+  walletTxnDescriptions?: Map<number, string>;
+}
+
+/**
+ * E5: Detect duplicate deals (same date + amount + description).
+ *
+ * The grouping key also uses the bank statement memo and the partner, because
+ * freee expense deals routinely carry neither a description nor a partner:
+ * without them, "same day, same amount" alone groups unrelated transit fares
+ * and transfer fees together. The partner is only part of the key when *both*
+ * deals have one, so adding partners cannot hide a real duplicate.
+ */
+export function checkDuplicateDeals(deals: Deal[], options: DuplicateCheckOptions = {}): AuditResult {
+  const { excludeAccountItems, minAmount, walletTxnDescriptions } = options;
   const groups = new Map<string, number[]>();
+  let excludedCount = 0;
 
   for (const d of deals) {
-    const desc = d.details[0]?.description ?? d.details[0]?.account_item_name ?? "";
-    const key = `${d.issue_date}|${d.amount}|${d.type}|${desc}`;
+    if (minAmount != null && d.amount < minAmount) {
+      excludedCount++;
+      continue;
+    }
+    if (excludeAccountItems?.length) {
+      const hit = d.details.some((det) => det.account_item_name && excludeAccountItems.includes(det.account_item_name));
+      if (hit) {
+        excludedCount++;
+        continue;
+      }
+    }
+
+    const rawDesc = d.details[0]?.description ?? walletTxnDescriptions?.get(d.id) ?? d.details[0]?.account_item_name ?? "";
+    const desc = normalizeForMatching(rawDesc);
+    // partner は両方に設定されている場合だけ効かせる（片方だけなら従来どおり日付+金額+摘要で判定）
+    const partner = d.partner_id ?? "";
+    const key = `${d.issue_date}|${d.amount}|${d.type}|${desc}|${partner}`;
     const ids = groups.get(key) ?? [];
     ids.push(d.id);
     groups.set(key, ids);
@@ -263,7 +337,7 @@ export function checkDuplicateDeals(deals: Deal[]): AuditResult {
   const dupes: AuditItem[] = [];
   for (const [key, ids] of groups) {
     if (ids.length < 2) continue;
-    const [date, amount, desc] = key.split("|");
+    const [date, amount, , desc] = key.split("|");
     dupes.push({
       id: ids[0],
       ids,
@@ -275,10 +349,15 @@ export function checkDuplicateDeals(deals: Deal[]): AuditResult {
     });
   }
 
+  const excludedNote = excludedCount > 0 ? `（${excludedCount} 件を除外設定によりスキップ）` : "";
+
   return {
     check: "duplicate_deals",
     severity: dupes.length > 0 ? "error" : "pass",
-    summary: dupes.length > 0 ? `${dupes.length} グループの重複取引を検出` : "重複取引なし",
+    summary:
+      dupes.length > 0
+        ? `${dupes.length} グループの重複取引を検出${excludedNote}`
+        : `重複取引なし${excludedNote}`,
     items: dupes,
   };
 }
@@ -319,6 +398,15 @@ export function resolveDomesticTaxCodes(taxes: CompanyTax[]): Set<number> {
 }
 
 /**
+ * Foreign vendor entry for E3.
+ *
+ * A bare string is the regex itself (kept for backwards compatibility); the
+ * object form lets `config/audit-rules.yaml` give a readable display name for
+ * a pattern like `google\s*cloud`.
+ */
+export type ForeignVendor = string | { pattern: string; name?: string };
+
+/**
  * E3: Flag deals whose description matches foreign vendor patterns but use a
  * domestic taxable-purchase tax_code. This does **not** assert a tax error —
  * it surfaces candidates that need human review of the service provider and
@@ -329,25 +417,35 @@ export function resolveDomesticTaxCodes(taxes: CompanyTax[]): Set<number> {
  */
 export function checkTaxCategory(
   deals: Deal[],
-  foreignVendorPatterns: string[],
+  foreignVendorPatterns: ForeignVendor[],
   domesticTaxCodes: Set<number> = FALLBACK_DOMESTIC_TAX_CODES,
+  walletTxnDescriptions?: Map<number, string>,
 ): AuditResult {
   const items: AuditItem[] = [];
-  const patterns = foreignVendorPatterns.map((p) => new RegExp(p, "i"));
+  const patterns = foreignVendorPatterns.map((v) => {
+    const pattern = typeof v === "string" ? v : v.pattern;
+    const label = typeof v === "string" ? v : (v.name ?? v.pattern);
+    return { label, re: new RegExp(normalizeForMatching(pattern), "i") };
+  });
 
   for (const d of deals) {
+    // 銀行・カード明細の摘要にしかベンダー名が現れない取引が多いため、判定材料に加える
+    const walletDesc = walletTxnDescriptions?.get(d.id) ?? "";
     for (const detail of d.details) {
-      const text = `${detail.description ?? ""} ${detail.account_item_name}`;
-      const isForeign = patterns.some((p) => p.test(text));
-      if (isForeign && domesticTaxCodes.has(detail.tax_code)) {
+      const text = normalizeForMatching(
+        `${detail.description ?? ""} ${detail.account_item_name ?? ""} ${walletDesc}`,
+      );
+      const matched = patterns.find((p) => p.re.test(text));
+      if (matched && domesticTaxCodes.has(detail.tax_code)) {
+        const label = detail.description ?? detail.account_item_name ?? walletDesc;
         items.push({
           id: d.id,
           date: d.issue_date,
           amount: detail.amount,
-          description: `${detail.description ?? detail.account_item_name} (tax_code=${detail.tax_code})`,
+          description: `${label} (tax_code=${detail.tax_code})`,
           level: "warning",
-          reason:
-            "海外サービス名に国内課税仕入の税区分が設定されている（請求主体・課税関係を確認）",
+          matchedVendor: matched.label,
+          reason: `海外サービス名（${matched.label}）に国内課税仕入の税区分が設定されている（請求主体・課税関係を確認）`,
         });
       }
     }
