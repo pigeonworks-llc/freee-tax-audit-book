@@ -164,10 +164,13 @@ foreign_vendors:            # E3 の照合対象。全角・大文字小文字�
   - { pattern: 'google\s*cloud', name: Google Cloud }
 
 duplicate_check:
+  level: warning            # info / warning / error（既定 warning）
   exclude_account_items:    # 同日に複数発生することが常態の科目
     - "旅費交通費"
   min_amount: 1000          # これ未満は対象外
 ```
+
+重複は機械的に確定できないため、既定は `error` ではなく `warning` です。同日・同額の取引が2件あることは、二重計上の証拠にも正当な2件の証拠にもなります（カード会社が同額を2回請求している場合など）。Vision API が「同一取引」と判定したケースも同じレベルで報告し、削除の判断は人に委ねます。
 
 ベンダーリストの年次メンテナンスはこのファイルの編集だけで済みます（コードの再ビルドは不要）。
 
