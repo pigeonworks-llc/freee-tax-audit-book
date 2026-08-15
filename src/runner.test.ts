@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { FreeeClient } from "../lib/freee/client.js";
 import type { Deal, WalletTransaction } from "../lib/freee/types.js";
 import { describe, expect, it } from "vitest";
+import { DuplicateCache } from "./duplicate-cache.js";
 import { type AuditDeps, runAudit } from "./runner.js";
 
 /** GET /api/1/deals returns account_item_id only — mirror that here. */
@@ -165,5 +169,81 @@ describe("runAudit: duplicate report level", () => {
 
     expect(dupe?.severity).toBe("error");
     expect(dupe?.items[0].level).toBe("error");
+  });
+
+  it("keeps confirmed_dup cache hits at the configured level", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "dup-level-cache-"));
+    const cachePath = join(tmpDir, "duplicate-check.db");
+    try {
+      const seed = new DuplicateCache(cachePath);
+      seed.set([1, 2], "confirmed_dup");
+      seed.close();
+
+      // E6 の invoice OCR も anthropic.messages.create を使うため、
+      // 重複比較プロンプトだけを数える（invoice 経路と混同しない）。
+      let duplicateVisionCalls = 0;
+      const deals = makeDuplicatePair();
+      const deps = depsFor(deals, {
+        fullCheck: false,
+        dupCachePath: cachePath,
+        // biome-ignore lint/suspicious/noExplicitAny: minimal Vision stub for this path
+        anthropic: {
+          messages: {
+            create: async (req: { messages?: Array<{ content?: unknown }> }) => {
+              const blob = JSON.stringify(req.messages ?? []);
+              if (blob.includes("same_transaction")) duplicateVisionCalls++;
+              return { content: [{ type: "text", text: '{"same_transaction": true, "reason": "should not run"}' }] };
+            },
+          },
+        } as any,
+      });
+
+      const { results } = await runAudit(deps);
+      const dupe = results.find((r) => r.check === "duplicate_deals");
+
+      expect(duplicateVisionCalls).toBe(0);
+      expect(dupe?.severity).toBe("warning");
+      expect(dupe?.items[0].level).toBe("warning");
+      expect(dupe?.items[0].reason).toContain("重複確認済み");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports metadata matches at the configured level, not a hard-coded warning", async () => {
+    const deals = makeDuplicatePair();
+    const sameMeta = {
+      partner_name: "NOMAD.LOVE",
+      issue_date: "2025-08-15",
+      amount: 12000,
+    };
+    const client = mockFreee(deals, {
+      // Vision 経路に入らないよう PDF 取得を失敗させ、メタデータ比較へ落とす
+      downloadReceipt: async () => {
+        throw new Error("download unavailable");
+      },
+      getReceipt: async (id: number) => ({
+        id,
+        status: "confirmed",
+        created_at: "2025-08-15",
+        mime_type: "application/pdf",
+        receipt_metadatum: sameMeta,
+      }),
+    });
+
+    const deps = depsFor(deals, {
+      client,
+      // anthropic が無いと refine ブロック自体がスキップされるため、スタブだけ渡す
+      // biome-ignore lint/suspicious/noExplicitAny: presence-only stub; Vision must not succeed
+      anthropic: { messages: { create: async () => ({ content: [] }) } } as any,
+      duplicateOptions: { level: "error" },
+    });
+
+    const { results } = await runAudit(deps);
+    const dupe = results.find((r) => r.check === "duplicate_deals");
+
+    expect(dupe?.severity).toBe("error");
+    expect(dupe?.items[0].level).toBe("error");
+    expect(dupe?.items[0].reason).toContain("メタデータ同一、要確認");
   });
 });
