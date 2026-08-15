@@ -29,6 +29,8 @@ export interface Deal {
   type: "income" | "expense";
   amount: number;
   due_amount?: number;
+  /** 取引先 ID。経費取引では未設定のことが多い。 */
+  partner_id?: number;
   details: DealDetail[];
   payments?: DealPayment[];
   receipts?: { id: number }[];
@@ -37,7 +39,11 @@ export interface Deal {
 export interface DealDetail {
   id: number;
   account_item_id: number;
-  account_item_name: string;
+  /**
+   * GET /api/1/deals は account_item_id のみを返すため、API レスポンス上は常に未設定。
+   * enrichAccountItemNames() で account_items から補完する。
+   */
+  account_item_name?: string;
   tax_code: number;
   amount: number;
   vat: number;

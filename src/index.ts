@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { FreeeClient } from "../lib/freee/client.js";
 import { generateAnnualReport, parseMonthlyResult, toMonthlyResult } from "./annual-report.js";
 import { parseAuditArgs } from "./cli.js";
+import { type AuditRules, parseAuditRules, parseReceiptRules } from "./config.js";
 import { runAudit } from "./runner.js";
 import { buildSheetData, sheetDataToCsv } from "./sheets.js";
 import { type AnthropicLike, checkReceiptConsistency, type DealWithOCR, ocrReceipt } from "./vision.js";
@@ -62,20 +63,15 @@ async function main() {
   let receiptRules: import("./checks.js").ReceiptExemptionRules | undefined;
   if (existsSync(rulesPath)) {
     const { parse } = await import("yaml");
-    const raw = parse(readFileSync(rulesPath, "utf-8")) as {
-      receipt_exemptions?: {
-        small_amount_threshold?: number;
-        zero_amount_threshold?: number;
-        exempt_account_items?: string[];
-      };
-    };
-    if (raw.receipt_exemptions) {
-      receiptRules = {
-        smallAmountThreshold: raw.receipt_exemptions.small_amount_threshold,
-        zeroAmountThreshold: raw.receipt_exemptions.zero_amount_threshold,
-        exemptAccountItems: raw.receipt_exemptions.exempt_account_items,
-      };
-    }
+    receiptRules = parseReceiptRules(parse(readFileSync(rulesPath, "utf-8")));
+  }
+
+  // Load check tuning (foreign vendor list, duplicate check exclusions)
+  const auditRulesPath = process.env.AUDIT_RULES_PATH ?? resolve("config/audit-rules.yaml");
+  let auditRules: AuditRules = {};
+  if (existsSync(auditRulesPath)) {
+    const { parse } = await import("yaml");
+    auditRules = parseAuditRules(parse(readFileSync(auditRulesPath, "utf-8")));
   }
 
   const { results, report, dealToWalletTxnId } = await runAudit({
@@ -87,6 +83,8 @@ async function main() {
     dupCachePath: resolve(cliArgs.dupCachePath),
     anthropic,
     receiptRules,
+    foreignVendors: auditRules.foreignVendors,
+    duplicateOptions: auditRules.duplicateOptions,
   });
 
   // E2: Vision-based receipt consistency (opt-in)
@@ -173,10 +171,13 @@ export {
   checkReceiptCoverage,
   checkStaleTransactions,
   checkTaxCategory,
+  enrichAccountItemNames,
   FALLBACK_DOMESTIC_TAX_CODES,
+  normalizeForMatching,
   resolveDomesticTaxCodes,
 } from "./checks.js";
 export { parseAuditArgs } from "./cli.js";
+export { parseAuditRules, parseReceiptRules } from "./config.js";
 export { generateReport } from "./report.js";
 export { runAudit } from "./runner.js";
 export { buildSheetData, sheetDataToCsv } from "./sheets.js";

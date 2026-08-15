@@ -5,8 +5,10 @@ import {
   checkReceiptCoverage,
   checkStaleTransactions,
   checkTaxCategory,
+  enrichAccountItemNames,
   FALLBACK_DOMESTIC_TAX_CODES,
   isReceiptExempt,
+  normalizeForMatching,
   resolveDomesticTaxCodes,
   type ReceiptExemptionRules,
 } from "./checks.js";
@@ -304,5 +306,141 @@ describe("E3: checkTaxCategory", () => {
     const result = checkTaxCategory(deals, foreignVendors, new Set([999]));
     expect(result.severity).toBe("warning");
     expect(result.items[0].description).toContain("tax_code=999");
+  });
+});
+
+describe("normalizeForMatching", () => {
+  it("folds full-width alphanumerics to half-width", () => {
+    expect(normalizeForMatching("ＰａｙＰａｌ決済")).toBe("paypal決済");
+    expect(normalizeForMatching("ＡＭＡＺＯＮ　プライム会費")).toBe("amazon プライム会費");
+  });
+});
+
+describe("enrichAccountItemNames", () => {
+  it("fills in names from account_item_id", () => {
+    const deals = [
+      makeDeal({
+        details: [{ id: 1, account_item_id: 100, tax_code: 21, amount: 3500, vat: 350 }],
+      }),
+    ];
+    enrichAccountItemNames(deals, [{ id: 100, name: "旅費交通費" }]);
+    expect(deals[0].details[0].account_item_name).toBe("旅費交通費");
+  });
+
+  it("leaves an already-set name alone", () => {
+    const deals = [makeDeal()];
+    enrichAccountItemNames(deals, [{ id: 100, name: "別の科目" }]);
+    expect(deals[0].details[0].account_item_name).toBe("新聞図書費");
+  });
+});
+
+describe("E5: checkDuplicateDeals options", () => {
+  function pair(overrides: Partial<Deal> = {}): Deal[] {
+    return [
+      makeDeal({ id: 1, amount: 209, ...overrides }),
+      makeDeal({ id: 2, amount: 209, ...overrides }),
+    ];
+  }
+
+  it("skips deals in excluded account items", () => {
+    const deals = pair({
+      details: [{ id: 1, account_item_id: 100, account_item_name: "旅費交通費", tax_code: 21, amount: 209, vat: 20 }],
+    });
+    const result = checkDuplicateDeals(deals, { excludeAccountItems: ["旅費交通費"] });
+    expect(result.severity).toBe("pass");
+    expect(result.summary).toContain("2 件を除外設定によりスキップ");
+  });
+
+  it("skips deals below the minimum amount", () => {
+    const result = checkDuplicateDeals(pair(), { minAmount: 1000 });
+    expect(result.severity).toBe("pass");
+  });
+
+  it("still reports duplicates above the minimum amount", () => {
+    const deals = [makeDeal({ id: 1, amount: 5000 }), makeDeal({ id: 2, amount: 5000 })];
+    const result = checkDuplicateDeals(deals, { minAmount: 1000 });
+    expect(result.severity).toBe("error");
+    expect(result.items[0].ids).toEqual([1, 2]);
+  });
+
+  it("separates deals whose bank statement memos differ", () => {
+    const deals = [
+      makeDeal({ id: 1, amount: 5000, details: [{ id: 1, account_item_id: 100, tax_code: 21, amount: 5000, vat: 500 }] }),
+      makeDeal({ id: 2, amount: 5000, details: [{ id: 2, account_item_id: 100, tax_code: 21, amount: 5000, vat: 500 }] }),
+    ];
+    const result = checkDuplicateDeals(deals, {
+      walletTxnDescriptions: new Map([
+        [1, "LUUP, INC."],
+        [2, "Ｓ．ＲＩＤＥ"],
+      ]),
+    });
+    expect(result.severity).toBe("pass");
+  });
+
+  it("separates deals with different partners", () => {
+    const deals = [
+      makeDeal({ id: 1, type: "income", amount: 55000, partner_id: 10 }),
+      makeDeal({ id: 2, type: "income", amount: 55000, partner_id: 20 }),
+    ];
+    expect(checkDuplicateDeals(deals).severity).toBe("pass");
+  });
+
+  it("still groups deals when only one side has a partner", () => {
+    const deals = [makeDeal({ id: 1, amount: 5000, partner_id: 10 }), makeDeal({ id: 2, amount: 5000 })];
+    expect(checkDuplicateDeals(deals).severity).toBe("pass");
+  });
+});
+
+describe("E3: checkTaxCategory candidate extraction", () => {
+  const vendors = ["paypal", "amazon", { pattern: "google\\s*cloud", name: "Google Cloud" }];
+
+  function foreignDeal(overrides: Partial<Deal> = {}): Deal {
+    return makeDeal({
+      details: [{ id: 1, account_item_id: 100, account_item_name: "通信費", tax_code: 21, amount: 5000, vat: 500 }],
+      ...overrides,
+    });
+  }
+
+  it("matches full-width vendor names", () => {
+    const deals = [
+      foreignDeal({
+        details: [
+          {
+            id: 1,
+            account_item_id: 100,
+            account_item_name: "通信費",
+            tax_code: 21,
+            amount: 5000,
+            vat: 500,
+            description: "ＰａｙＰａｌ決済 Cleverbridge GmbH",
+          },
+        ],
+      }),
+    ];
+    const result = checkTaxCategory(deals, vendors, new Set([21]));
+    expect(result.severity).toBe("warning");
+    expect(result.items[0].matchedVendor).toBe("paypal");
+  });
+
+  it("matches vendor names that appear only in the bank statement memo", () => {
+    const result = checkTaxCategory([foreignDeal()], vendors, new Set([21]), new Map([[1, "ＡＭＡＺＯＮ　ウェブ サービス"]]));
+    expect(result.severity).toBe("warning");
+    expect(result.items[0].matchedVendor).toBe("amazon");
+  });
+
+  it("reports the display name for a pattern that has one", () => {
+    const result = checkTaxCategory([foreignDeal()], vendors, new Set([21]), new Map([[1, "GOOGLE CLOUD JAPAN"]]));
+    expect(result.items[0].matchedVendor).toBe("Google Cloud");
+    expect(result.items[0].reason).toContain("Google Cloud");
+  });
+
+  it("does not put the string \"undefined\" in the description when the account name is missing", () => {
+    const deals = [
+      foreignDeal({
+        details: [{ id: 1, account_item_id: 100, tax_code: 21, amount: 5000, vat: 500, description: "PayPal" }],
+      }),
+    ];
+    const result = checkTaxCategory(deals, vendors, new Set([21]));
+    expect(result.items[0].description).not.toContain("undefined");
   });
 });
