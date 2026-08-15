@@ -182,6 +182,7 @@ export {
 } from "./checks.js";
 export { parseAuditArgs } from "./cli.js";
 export { parseAuditRules, parseReceiptCheckConfig, parseReceiptRules } from "./config.js";
+export { dealsFilterUrl, walletTxnUrl } from "./freee-links.js";
 export { generateReport } from "./report.js";
 export { runAudit } from "./runner.js";
 export { buildSheetData, sheetDataToCsv } from "./sheets.js";

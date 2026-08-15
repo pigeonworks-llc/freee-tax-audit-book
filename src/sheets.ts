@@ -1,6 +1,5 @@
 import type { AuditResult } from "./checks.js";
-
-const FREEE_WALLET_TXN_URL = "https://secure.freee.co.jp/wallet_txns/stream";
+import { dealsFilterUrl, walletTxnUrl } from "./freee-links.js";
 
 export interface SheetData {
   details: Array<{
@@ -27,7 +26,8 @@ export function buildSheetData(
       const urls = ids
         .map((id) => {
           const wtId = dealToWalletTxnId?.get(id);
-          return wtId ? `${FREEE_WALLET_TXN_URL}/${wtId}` : "";
+          // 明細に紐付かない取引は、日付と金額で絞り込んだ取引一覧へ送る
+          return wtId ? walletTxnUrl(wtId) : dealsFilterUrl(item.date, item.amount);
         })
         .filter(Boolean)
         .join("\n");

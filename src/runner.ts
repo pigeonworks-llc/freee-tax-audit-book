@@ -365,6 +365,6 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
     results.push(invoiceResult);
   }
 
-  const report = generateReport(results, period);
+  const report = generateReport(results, period, dealToWalletTxnId);
   return { results, report, dealToWalletTxnId };
 }
