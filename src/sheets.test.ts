@@ -54,13 +54,29 @@ describe("buildSheetData", () => {
     expect(url).toContain("8888002");
   });
 
-  it("leaves URL empty when no mapping exists", () => {
+  it("falls back to a filtered deals list when no mapping exists", () => {
     const results: AuditResult[] = [
       {
         check: "receipt_coverage",
         severity: "error",
         summary: "1 件",
         items: [{ id: 99, date: "2026-03-15", amount: 100, level: "error", reason: "未添付" }],
+      },
+    ];
+
+    const sheets = buildSheetData(results, "FY2025", new Map());
+    const url = sheets.details[0].rows[1][1] as string;
+    expect(url).toContain("issue_date=between_2026-03-15_2026-03-15");
+    expect(url).toContain("amount=between_100_100");
+  });
+
+  it("leaves URL empty when the item has neither a mapping nor a date and amount", () => {
+    const results: AuditResult[] = [
+      {
+        check: "receipt_coverage",
+        severity: "error",
+        summary: "1 件",
+        items: [{ id: 99, level: "error", reason: "未添付" }],
       },
     ];
 

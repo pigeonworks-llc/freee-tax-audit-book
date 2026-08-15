@@ -1,4 +1,5 @@
 import type { AuditResult } from "./checks.js";
+import { dealsFilterUrl, walletTxnUrl } from "./freee-links.js";
 
 export interface AuditReport {
   period: string;
@@ -11,7 +12,17 @@ export interface AuditReport {
 const SEVERITY_ORDER = { pass: 0, warning: 1, error: 2 } as const;
 const SEVERITY_ICON = { pass: "✓", warning: "!", error: "✗" } as const;
 
-export function generateReport(results: AuditResult[], period: string): AuditReport {
+/**
+ * @param dealToWalletTxnId deal_id → wallet_txn_id. Lets each row link straight
+ *   to the statement line; deals without a mapped statement fall back to a
+ *   filtered deals list. Without a link, confirming a few hundred findings
+ *   means searching freee for one ID at a time.
+ */
+export function generateReport(
+  results: AuditResult[],
+  period: string,
+  dealToWalletTxnId?: Map<number, number>,
+): AuditReport {
   const worst = results.reduce<"pass" | "warning" | "error">(
     (acc, r) => (SEVERITY_ORDER[r.severity] > SEVERITY_ORDER[acc] ? r.severity : acc),
     "pass",
@@ -42,12 +53,20 @@ export function generateReport(results: AuditResult[], period: string): AuditRep
     lines.push(r.summary);
     lines.push("");
     if (r.items.length > 0) {
-      lines.push("| ID | 日付 | 金額 | 説明 | レベル | 理由 |");
-      lines.push("|----|------|------|------|--------|------|");
+      lines.push("| ID | freee | 日付 | 金額 | 説明 | レベル | 理由 |");
+      lines.push("|----|-------|------|------|------|--------|------|");
       for (const item of r.items) {
-        const id = item.ids ? item.ids.join(",") : String(item.id);
+        const ids = item.ids ?? [item.id];
+        const links = ids
+          .map((id) => {
+            const wtId = dealToWalletTxnId?.get(id);
+            const url = wtId ? walletTxnUrl(wtId) : dealsFilterUrl(item.date, item.amount);
+            return url ? `[${id}](${url})` : "";
+          })
+          .filter(Boolean)
+          .join(" ");
         lines.push(
-          `| ${id} | ${item.date ?? ""} | ${item.amount?.toLocaleString() ?? ""} | ${item.description ?? ""} | ${item.level ?? ""} | ${item.reason ?? ""} |`,
+          `| ${ids.join(",")} | ${links} | ${item.date ?? ""} | ${item.amount?.toLocaleString() ?? ""} | ${item.description ?? ""} | ${item.level ?? ""} | ${item.reason ?? ""} |`,
         );
       }
       lines.push("");

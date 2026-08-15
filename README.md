@@ -50,6 +50,9 @@ export FREEE_CLIENT_ID=<OAuth Client ID>
 export FREEE_CLIENT_SECRET=<OAuth Client Secret>
 export FREEE_TOKEN_PATH=~/.config/freee/token.json
 
+# 期首月（未指定なら 7）。freee の事業所設定に合わせる
+export FISCAL_START_MONTH=1
+
 # Vision チェック（E2, E5）を使う場合
 export ANTHROPIC_API_KEY=<Anthropic API Key>
 ```
@@ -59,24 +62,27 @@ export ANTHROPIC_API_KEY=<Anthropic API Key>
 初回のみ、OAuth 認証フローを実行してトークンを取得する必要があります。
 
 ```bash
-node oauth-setup.js
-# ブラウザでログイン → 認証コードを入力
+node dist/src/oauth-setup.js
+# 表示された URL をブラウザで開いてログイン → 認可コードを貼り付け
 ```
+
+トークンは `FREEE_TOKEN_PATH` に書き出されます。以降の更新は自動で行われるため、
+このコマンドは初回と、リフレッシュトークンが失効したときだけ実行します。
 
 ## 実行
 
 ```bash
 # 当月チェック
-node dist/index.js report.md
+node dist/src/index.js report.md
 
 # 会計年度チェック（期首〜当月）
-node dist/index.js report.md --monthly
+node dist/src/index.js report.md --monthly
 
 # Vision チェック込み
-RECEIPT_DIR=./receipts node dist/index.js report.md --monthly --vision
+RECEIPT_DIR=./receipts node dist/src/index.js report.md --monthly --vision
 
 # CSV も出力
-node dist/index.js report.md --monthly --sheets
+node dist/src/index.js report.md --monthly --sheets
 ```
 
 ## 消費税区分チェック (E3) と税区分コード
@@ -90,20 +96,45 @@ E3 は次の組み合わせで動作します。
 
 税区分の誤りを確定するチェックではなく、請求主体・事業者向け／消費者向け電気通信利用役務などを人間が確認するための候補抽出です。
 
-## 免除ルールの設定
+## 設定ファイル
 
-`config/receipt-rules.yaml` でレシート添付漏れの免除条件を設定できます。
+### `config/receipt-rules.yaml` — 証憑添付チェック（E1）
+
+このチェックが見るのは「freee 上で取引と証憑が紐付いているか」であって、電子帳簿保存法の保存要件そのものではありません。電子取引データについて法令が求めるのは、データを保存し税務調査等の際に提示・提出できる状態にしておくことです（検索要件は規4①、改ざん防止措置は事務処理規程で足ります）。**freee に証憑を集約する運用を選んだ場合の設定**として扱ってください。
 
 ```yaml
+receipt_check:
+  enabled: true            # false でチェック自体を無効化
+  unattached_level: warning  # info / warning / error（既定 warning）
+
 receipt_exemptions:
-  small_amount_threshold: 10000  # 少額特例（税込1万円未満）
-  zero_amount_threshold: 1       # ¥0/¥1 の認証チャージ等
-  exempt_account_items:
-    - "旅費交通費"    # 公共交通機関特例
-    - "支払手数料"    # 銀行振込手数料
-    - "役員報酬"      # 給与明細で管理
-    # ... 詳細は config/receipt-rules.yaml を参照
+  zero_amount_threshold: 1
+  # 免除は金額ではなく取引の性質で行う
+  exempt_account_categories:   # 事業経費でない / 貸借対照表科目
+    - "事業主"
+  exempt_account_items:        # 領収書が発行されない / 別証憑で管理
+    - "旅費交通費"
+    - "支払手数料"
+  exempt_description_patterns: # 実務上インボイスを保存しないもの
+    - "振込手数料"
 ```
+
+少額特例（税込1万円未満）による一律免除は既定で無効です。少額特例が免除するのは適格請求書の保存要件であって、所得税法・法人税法上の領収書等の保存義務ではないためです。従来どおりの金額免除が必要なら `small_amount_threshold` を設定してください。
+
+### `config/audit-rules.yaml` — 税区分（E3）・重複（E5）
+
+```yaml
+foreign_vendors:            # E3 の照合対象。全角・大文字小文字は自動で吸収
+  - aws
+  - { pattern: 'google\s*cloud', name: Google Cloud }
+
+duplicate_check:
+  exclude_account_items:    # 同日に複数発生することが常態の科目
+    - "旅費交通費"
+  min_amount: 1000          # これ未満は対象外
+```
+
+ベンダーリストの年次メンテナンスはこのファイルの編集だけで済みます（コードの再ビルドは不要）。
 
 ## スケジュール実行の例
 
