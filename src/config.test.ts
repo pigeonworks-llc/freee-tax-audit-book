@@ -1,5 +1,10 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
+import { checkTaxCategory } from "./checks.js";
 import { parseAuditRules, parseReceiptCheckConfig, parseReceiptRules } from "./config.js";
+import type { Deal } from "../lib/freee/types.js";
 
 describe("parseReceiptRules", () => {
   it("maps yaml keys to rule fields", () => {
@@ -55,6 +60,48 @@ describe("parseAuditRules", () => {
   it("returns an empty object for an absent or malformed file", () => {
     expect(parseAuditRules({})).toEqual({});
     expect(parseAuditRules(null)).toEqual({});
+  });
+});
+
+describe("同梱 config/audit-rules.yaml の foreign_vendors", () => {
+  const rules = parseAuditRules(parse(readFileSync(resolve("config/audit-rules.yaml"), "utf-8")));
+  const deal = (description: string): Deal => ({
+    id: 1,
+    company_id: 1,
+    issue_date: "2026-04-01",
+    amount: 3000,
+    type: "expense",
+    details: [{ id: 1, account_item_id: 1, tax_code: 21, amount: 3000, vat: 0, description }],
+  });
+
+  // カード明細に実際に現れる表記。全角・請求代行・サフィックス付きでも拾えること。
+  it.each([
+    ["OPENAI *CHATGPT SUBSCR", "openai"],
+    ["Ａｐｐｌｅ　ｉＴｕｎｅｓ　Ｓｔｏｒｅ", "Apple / iTunes"],
+    ["GARMIN (EUROPE) LIMITED", "Garmin"],
+    ["AUDIBLE*NU7ZU01Z1", "audible"],
+    ["CRAFT DOCS", "Craft Docs"],
+    ["SUNO INC.", "suno"],
+    ["UDEMYJP", "udemy"],
+    ["D J*WSJ", "Dow Jones / WSJ"],
+    ["PAYPAL *PRAGPROG BK", "paypal"],
+    ["アマゾンサービシーズインターナショナル", "Amazon Services International"],
+  ])("%s を海外ベンダーとして検出する", (description, vendor) => {
+    const result = checkTaxCategory([deal(description)], rules.foreignVendors ?? []);
+    expect(result.severity).toBe("warning");
+    expect(result.items[0]?.matchedVendor).toBe(vendor);
+  });
+
+  // 国内法人からの請求は対象外。ここが warning になると偽陽性でノイズになる。
+  it.each([
+    "インターネットイニシアティブ　－東京都",
+    "ＧＭＯオフィスサポ－ト　東京都　渋谷区",
+    "ＯＲｅｉｌｌｙ　Ｊａｐａｎ　Ｅｂｏｏｋ",
+    "ＭｏｎｏｔａＲＯ．ｃｏｍ",
+    "ユウビン",
+  ])("%s は国内取引として検出しない", (description) => {
+    const result = checkTaxCategory([deal(description)], rules.foreignVendors ?? []);
+    expect(result.severity).toBe("pass");
   });
 });
 
