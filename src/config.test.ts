@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
-import { checkTaxCategory } from "./checks.js";
+import { checkReceiptCoverage, checkTaxCategory } from "./checks.js";
 import { parseAuditRules, parseReceiptCheckConfig, parseReceiptRules } from "./config.js";
 import type { Deal } from "../lib/freee/types.js";
 
@@ -102,6 +102,37 @@ describe("同梱 config/audit-rules.yaml の foreign_vendors", () => {
   ])("%s は国内取引として検出しない", (description) => {
     const result = checkTaxCategory([deal(description)], rules.foreignVendors ?? []);
     expect(result.severity).toBe("pass");
+  });
+});
+
+describe("同梱 config/receipt-rules.yaml の性質ベース免除", () => {
+  const rules = parseReceiptRules(parse(readFileSync(resolve("config/receipt-rules.yaml"), "utf-8")));
+  const deal = (accountItemName: string, amount = 70000): Deal => ({
+    id: 1,
+    company_id: 1,
+    issue_date: "2026-06-30",
+    amount,
+    type: "expense",
+    details: [
+      { id: 1, account_item_id: 1, account_item_name: accountItemName, tax_code: 2, amount, vat: 0 },
+    ],
+    receipts: [],
+  });
+
+  // 税金の納付。証憑は納付書・領収証書であって、取引に紐付ける請求書ではない。
+  // 銀行明細の摘要（「コクゼイ」等）ではなく勘定科目名で来る経路を塞ぐ。
+  it.each(["法人税等", "租税公課", "未払法人税等"])(
+    "%s は証憑未紐付けでも warning にしない",
+    (accountItemName) => {
+      const result = checkReceiptCoverage([deal(accountItemName)], rules);
+      expect(result.severity).toBe("pass");
+    },
+  );
+
+  // 免除しすぎていないこと。通常の経費は検出されないと E1 の意味がなくなる。
+  it.each(["新聞図書費", "通信費", "消耗品費"])("%s は証憑未紐付けを検出する", (accountItemName) => {
+    const result = checkReceiptCoverage([deal(accountItemName, 3630)], rules);
+    expect(result.severity).toBe("warning");
   });
 });
 
