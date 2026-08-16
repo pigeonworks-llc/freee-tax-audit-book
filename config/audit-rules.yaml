@@ -28,6 +28,10 @@ foreign_vendors:
   - superultra
   - replicate
   - huggingface
+  - suno
+  - { pattern: 'eleven\s*labs', name: ElevenLabs }
+  - midjourney
+  - perplexity
 
   # SaaS・業務ソフト
   - microsoft
@@ -44,6 +48,25 @@ foreign_vendors:
   - { pattern: 'meta\s*platforms|facebook', name: Meta Platforms }
   - linkedin
   - x\s*corp
+  - { pattern: 'craft\s*docs', name: Craft Docs }
+  - evernote
+  - grammarly
+  - { pattern: '1password|agilebits', name: 1Password }
+  - { pattern: 'garmin', name: Garmin }
+
+  # 学習・書籍・メディア（配信元が海外法人のもの）
+  - udemy
+  - coursera
+  - audible
+  - { pattern: 'd\s*j\*|dow\s*jones|wsj', name: Dow Jones / WSJ }
+  - { pattern: 'nyt|new\s*york\s*times', name: New York Times }
+  - medium
+  - substack
+
+  # 請求主体が海外法人名義で表示されるもの
+  # 例: Kindle 本や AWS の請求が「アマゾンサービシーズインターナショナル」名義で
+  # カード明細に現れる。国内の Amazon.co.jp 名義とは請求主体が異なる。
+  - { pattern: 'アマゾンサービシーズ|amazon\s*services', name: Amazon Services International }
 
   # 決済代行経由（請求主体が代行業者名で表示される）
   - stripe
