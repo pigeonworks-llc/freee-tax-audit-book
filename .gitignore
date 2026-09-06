@@ -1,3 +1,19 @@
 node_modules/
 dist/
+
+# 判定キャッシュ (SQLite)
 *.db
+*.db-wal
+*.db-shm
+
+# 認証情報。oauth-setup の既定出力は cwd の token.json
+token.json
+.env
+.env.*
+
+# 実行結果 (取引 ID・金額・指摘明細を含む)
+tax-audit-*.md
+tax-audit-*.csv
+audit-results-*.json
+results/
+receipts/

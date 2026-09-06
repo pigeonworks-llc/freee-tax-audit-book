@@ -12,13 +12,15 @@ freee API を使って経理データの品質を自動チェックする仕組�
 | ID | チェック | 内容 |
 |----|---------|------|
 | E1 | 証憑の紐付け | 経費取引が freee 上で証憑と紐付いているかを検出（免除ルール対応） |
-| E2 | レシート整合性 | Vision API でレシートと取引の金額・日付を照合 |
+| E2 | レシート整合性 | freee に添付された証憑を Vision API で読み、取引の金額・日付と照合 |
 | E3 | 消費税区分 | 海外ベンダー名 + 国内課税仕入 tax_code の要確認を検出（事業所別税区分 API 利用） |
-| E4 | 放置取引 | 未登録明細の長期放置を検出（30日/90日） |
-| E5 | 重複取引 | 同一取引の二重計上を検出（Vision 精査） |
-| E6 | インボイス登録番号 | 証憑の登録番号を国税庁の公表 API で検証（Vision 精査） |
+| E4 | 放置取引 | 未登録明細の取引日からの長期放置を検出（30日以上 warning / 90日以上 error） |
+| E5 | 重複取引 | 同一取引の二重計上候補を検出（`--vision` 時は証憑で精査） |
+| E6 | インボイス登録番号 | 証憑の登録番号を国税庁 Web-API で取引日時点の登録状況・公表名称と照合 |
 
-E2・E6 は Vision API を使うため任意実行です。
+E2・E6 と E5 の証憑精査は `--vision` を付けたときだけ動きます（`ANTHROPIC_API_KEY` があるだけでは
+証憑を外部に送りません）。各チェックは **合格 / 要確認 / 不一致 / 読取失敗 / 未検証** を区別し、
+確認できていない件数はレポートの summary に出ます。「問題なし」は検証済みの範囲についてだけ言います。
 
 ## セットアップ
 
@@ -63,11 +65,16 @@ export ANTHROPIC_API_KEY=<Anthropic API Key>
 # アプリケーション ID は国税庁に申請して発行を受ける: https://www.invoice-kohyo.nta.go.jp/web-api/index.html
 export NTA_APP_ID=<国税庁 Web-API アプリケーション ID>
 
-# E2 のレシート PDF 置き場（--vision と併用。未指定だと E2 は実行されない）
-export RECEIPT_DIR=./receipts
+# 1 回の実行で新規に OCR する証憑数の上限（既定 20）。読了分はキャッシュされ、次回は残りから続く
+export VISION_MAX_RECEIPTS=20
 
 # 月次結果 JSON の保存先。年次レポート（--annual）の入力になる
 export AUDIT_JSON_DIR=./results
+
+# 判定キャッシュの保存先（既定はカレントディレクトリ）
+export DUP_CACHE_PATH=$HOME/.cache/tax-audit/duplicate-check.db
+export OCR_CACHE_PATH=$HOME/.cache/tax-audit/receipt-ocr.db
+export INVOICE_CACHE_PATH=$HOME/.cache/tax-audit/invoice-check.db
 ```
 
 ### freee OAuth トークンの取得
@@ -82,47 +89,78 @@ node dist/src/oauth-setup.js
 トークンは `FREEE_TOKEN_PATH` に書き出されます。以降の更新は自動で行われるため、
 このコマンドは初回と、リフレッシュトークンが失効したときだけ実行します。
 
+freee は更新のたびに refresh_token を回転させます。更新後のトークンは `FREEE_TOKEN_PATH` に
+書き戻されるので、**CI など使い捨て環境ではこのファイルを実行後に永続化してください**。
+初回の値を毎回 Secret から書き出す運用だと、2 回目の更新で認証に失敗します。
+`examples/github-actions/tax-audit.yml` は状態リポジトリに書き戻す例です。
+`token.json` は `.gitignore` 済みですが、コミット対象に含めないよう注意してください。
+
 ## 実行
 
 ```bash
-# 当月チェック
+# 当月チェック（当月 1 日〜実行日）
 node dist/src/index.js report.md
 
-# 会計年度チェック（期首〜当月）
+# 前月を締める（毎月 1 日の自動実行向け。期首の 1 日に実行しても前期末の月が対象になる）
+node dist/src/index.js report.md --previous
+
+# 期首から実行日までの累計
 node dist/src/index.js report.md --monthly
 
-# Vision チェック込み
-RECEIPT_DIR=./receipts node dist/src/index.js report.md --monthly --vision
+# 任意期間
+node dist/src/index.js report.md --from 2025-10-01 --to 2025-12-31
+
+# Vision チェック込み（E2 / E6 と E5 の証憑精査）
+node dist/src/index.js report.md --previous --vision
 
 # CSV も出力
-node dist/src/index.js report.md --monthly --sheets
+node dist/src/index.js report.md --previous --sheets
 
 # キャッシュを無視して重複候補を再検証
-node dist/src/index.js report.md --monthly --full-check
+node dist/src/index.js report.md --previous --full-check
 
-# 年次レポート（AUDIT_JSON_DIR の月次 JSON を集約）
-AUDIT_JSON_DIR=./results node dist/src/index.js annual-report.md --annual
+# 年次レポート（AUDIT_JSON_DIR の結果 JSON を集約。既定は前期、--fiscal-year で指定）
+AUDIT_JSON_DIR=./results node dist/src/index.js annual-report.md --annual --fiscal-year FY2025
 ```
 
-`--monthly` の実行時に `AUDIT_JSON_DIR` を設定しておくと、月次の結果が
-`audit-results-<period>.json` として保存されます。年度末に `--annual` を実行すると、
-保存された月次 JSON を集約して年次レポートを生成します。
+終了コードは `0` = 指摘なし、`2` = error レベルの指摘あり、`1` = 実行失敗です。
+自動実行では 2 と 1 を区別して扱ってください（`examples/` を参照）。
+
+`AUDIT_JSON_DIR` を設定しておくと、実行ごとの結果が
+`audit-results-<period>-<実行日時>.json` として保存されます（同じ期間を再実行しても
+上書きされません）。JSON には対象期間・実行日時・各チェックの指摘明細が入ります。
+`--annual` は対象年度の期間に含まれる結果だけを集約し、同じ期間に複数の結果があれば
+最新を採用します。**年度のいずれかの月に結果が無い場合、年次の合格は出しません**
+（結果が無い月と、実施されなかったチェックがレポートに列挙されます）。
+
+### Vision OCR の件数上限とキャッシュ
+
+E2 / E6 は取引に添付されたすべての証憑を freee API からダウンロードして OCR します。
+1 回の実行で新規に OCR する件数は `VISION_MAX_RECEIPTS`（既定 20）で打ち切られますが、
+読了した証憑は `OCR_CACHE_PATH` の SQLite に残るため、次回の実行は残りから続きます。
+上限で読まなかった取引は「未検証」として件数がレポートに出ます。
 
 ### キャッシュの保存先
 
-重複チェックは `duplicate-check.db`、インボイス登録番号チェックは `invoice-check.db` に
-判定結果をキャッシュします。いずれも既定ではカレントディレクトリに作られるため、CI で
-ワークスペースが実行ごとに消える環境ではキャッシュが効かず、毎回 Vision API と
-国税庁 API を呼び直すことになります。
+重複判定は `duplicate-check.db`、証憑 OCR は `receipt-ocr.db`、登録番号の照会結果は
+`invoice-check.db` に保存されます。いずれも既定ではカレントディレクトリに作られるため、CI で
+ワークスペースが実行ごとに消える環境では `DUP_CACHE_PATH` / `OCR_CACHE_PATH` /
+`INVOICE_CACHE_PATH` でワークスペース外に置き、実行をまたいで永続化してください。
+登録番号の照会結果は「登録番号 × 取引日」ごとに 90 日間保持します。
 
-重複チェックのキャッシュは `DUP_CACHE_PATH` でワークスペース外のパスを指定できます。
+## インボイス登録番号チェック (E6)
 
-```bash
-export DUP_CACHE_PATH=$HOME/.cache/tax-audit/duplicate-check.db
-```
+証憑から読み取った登録番号 (T + 13 桁) を、国税庁 適格請求書発行事業者公表システムの
+Web-API「登録番号と日付を指定して情報を取得する機能」(`/1/valid`) で照会します。
+取引日を基準日にするため、登録前や失効・取消後の取引を区別できます。
+判定根拠（登録日・失効日・取消日）はレポートに出ます。
 
-インボイス登録番号チェックのキャッシュは現状 CLI からパスを指定できないため、
-CI で永続化する場合は作業ディレクトリ側をキャッシュ対象にしてください。
+- 利用にはアプリケーション ID (`NTA_APP_ID`) が必要です。未設定のときは登録番号のある
+  取引を「確認不能」の warning として報告し、合格にはしません。
+- 証憑の発行者名と公表名称が一致しないときは、屋号・表記揺れの可能性があるため
+  「要確認」の warning にします。
+- このチェックは登録番号の有効性の確認であり、個々の支出の仕入税額控除の可否を
+  確定するものではありません。
 
 ## 消費税区分チェック (E3) と税区分コード
 
@@ -131,7 +169,7 @@ E3 は次の組み合わせで動作します。
 1. `GET /api/1/deals` — 各明細の `tax_code`
 2. `GET /api/1/taxes/companies/{company_id}` — 事業所で使える税区分一覧（**推奨**。`/taxes/codes` は廃止予定）
 
-事業所別 API から名称に「課税仕入」「課対仕入」を含むコード集合を組み立て、海外ベンダー名パターンにマッチした取引がその集合に入っていれば warning とします。API 取得に失敗した場合のみ、フォールバックとして一般的な例示コード（2, 3, 21–23）を使います。
+事業所別 API から名称に「課税仕入」「課対仕入」「共対仕入」を含むコード集合（非対仕入・輸入・売上側は除く）を組み立て、海外ベンダー名パターンにマッチした取引がその集合に入っていれば warning とします。API 取得に失敗した場合は、freee 公式の税区分コード（課対仕入10% = 136、共対仕入10% = 138 等）と旧コードの例示集合で判定したうえで、E3 全体を「確認不能」の warning として報告します。
 
 税区分の誤りを確定するチェックではなく、請求主体・事業者向け／消費者向け電気通信利用役務などを人間が確認するための候補抽出です。
 
@@ -188,7 +226,9 @@ duplicate_check:
 | `examples/github-actions/tax-audit.yml` | GitHub Actions の月次実行例 |
 | `examples/legacy/Jenkinsfile.tax-audit` | 旧 Jenkins 例（参考のみ） |
 
-Secrets やパスは環境に合わせて書き換えてください。
+Secrets やパスは環境に合わせて書き換えてください。いずれの例も、**実行失敗 (exit 1) と
+error 指摘 (exit 2) を区別**し、更新後のトークン・判定キャッシュ・結果 JSON を実行をまたいで
+保存する形にしています。
 
 ## テスト
 

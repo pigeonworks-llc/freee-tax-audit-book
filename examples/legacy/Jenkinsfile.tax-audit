@@ -30,18 +30,21 @@ pipeline {
                     string(credentialsId: 'freee-client-secret', variable: 'FREEE_CLIENT_SECRET'),
                     string(credentialsId: 'anthropic-api-key', variable: 'ANTHROPIC_API_KEY'),
                 ]) {
-                    sh '''
-                        RECEIPT_DIR=receipts/incoming \
-                        node packages/tax-audit/dist/index.js \
-                            tax-audit-report.md --monthly --vision || true
-                    '''
+                    // 終了コード 2 (error 指摘あり) は処理失敗ではないので UNSTABLE に、1 は FAILURE にする
+                    script {
+                        def rc = sh(returnStatus: true, script: '''
+                            node dist/src/index.js tax-audit-report.md --previous --vision
+                        ''')
+                        if (rc == 2) { currentBuild.result = 'UNSTABLE' }
+                        else if (rc != 0) { error("tax-audit failed with exit ${rc}") }
+                    }
                 }
             }
         }
     }
     post {
         always {
-            archiveArtifacts artifacts: 'tax-audit-report.md', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'tax-audit-report.md', allowEmptyArchive: false
             script {
                 if (fileExists('tax-audit-report.md') && env.GOOGLE_CHAT_WEBHOOK) {
                     def lines = readFile('tax-audit-report.md').split('\n')
