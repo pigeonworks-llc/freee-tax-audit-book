@@ -89,6 +89,7 @@ async function main() {
     receiptCheck,
     foreignVendors: auditRules.foreignVendors,
     duplicateOptions: auditRules.duplicateOptions,
+    ntaAppId: process.env.NTA_APP_ID,
   });
 
   // E2: Vision-based receipt consistency (opt-in)
@@ -187,6 +188,6 @@ export { generateReport } from "./report.js";
 export { runAudit } from "./runner.js";
 export { buildSheetData, sheetDataToCsv } from "./sheets.js";
 export { InvoiceCache } from "./invoice-cache.js";
-export { checkInvoiceRegistration, extractRegistrationNumber, queryNtaApi } from "./invoice-check.js";
+export { checkInvoiceRegistration, extractRegistrationNumber, issuerNameMatches, queryNtaValidity } from "./invoice-check.js";
 export { checkReceiptConsistency, ocrReceipt } from "./vision.js";
 export { generateAnnualReport, parseMonthlyResult, toMonthlyResult } from "./annual-report.js";

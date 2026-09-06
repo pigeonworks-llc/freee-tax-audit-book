@@ -7,6 +7,7 @@ import { InvoiceCache } from "./invoice-cache.js";
 describe("InvoiceCache", () => {
   let cache: InvoiceCache;
   let tmpDir: string;
+  const ok = { valid: true, name: "株式会社テスト", basis: "2026-03-15 時点で登録済み" };
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "invoice-cache-"));
@@ -19,38 +20,30 @@ describe("InvoiceCache", () => {
   });
 
   it("returns null for unknown registration number", () => {
-    expect(cache.get("T1234567890123")).toBeNull();
+    expect(cache.get("T1234567890123", "2026-03-15")).toBeNull();
   });
 
-  it("stores and retrieves valid entry", () => {
-    cache.set("T1234567890123", true, "株式会社テスト");
-    const entry = cache.get("T1234567890123");
-    expect(entry).toEqual({ valid: true, name: "株式会社テスト" });
+  it("stores and retrieves an entry with its basis", () => {
+    cache.set("T1234567890123", "2026-03-15", ok);
+    expect(cache.get("T1234567890123", "2026-03-15")).toEqual(ok);
   });
 
-  it("stores and retrieves invalid entry", () => {
-    cache.set("T9999999999999", false);
-    const entry = cache.get("T9999999999999");
-    expect(entry).toEqual({ valid: false, name: null });
+  it("keys by as-of day so different deal dates are distinct", () => {
+    cache.set("T1234567890123", "2026-03-15", ok);
+    cache.set("T1234567890123", "2023-09-01", { valid: false, name: "株式会社テスト", basis: "登録日より前" });
+    expect(cache.get("T1234567890123", "2026-03-15")?.valid).toBe(true);
+    expect(cache.get("T1234567890123", "2023-09-01")?.valid).toBe(false);
+    expect(cache.get("T1234567890123", "2024-01-01")).toBeNull();
   });
 
   it("overwrites existing entry", () => {
-    cache.set("T1234567890123", true, "旧名称");
-    cache.set("T1234567890123", false, "新名称");
-    const entry = cache.get("T1234567890123");
-    expect(entry).toEqual({ valid: false, name: "新名称" });
+    cache.set("T1234567890123", "2026-03-15", ok);
+    cache.set("T1234567890123", "2026-03-15", { valid: false, name: "新名称", basis: "登録の取消" });
+    expect(cache.get("T1234567890123", "2026-03-15")).toEqual({ valid: false, name: "新名称", basis: "登録の取消" });
   });
 
   it("returns null for expired entry", () => {
-    cache.set("T1234567890123", true, "株式会社テスト");
-    // TTL 0 days means everything is expired
-    expect(cache.get("T1234567890123", 0)).toBeNull();
-  });
-
-  it("returns entry within TTL", () => {
-    cache.set("T1234567890123", true, "株式会社テスト");
-    // TTL 90 days - just inserted so should be valid
-    const entry = cache.get("T1234567890123", 90);
-    expect(entry).toEqual({ valid: true, name: "株式会社テスト" });
+    cache.set("T1234567890123", "2026-03-15", ok);
+    expect(cache.get("T1234567890123", "2026-03-15", 0)).toBeNull();
   });
 });

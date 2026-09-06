@@ -59,6 +59,10 @@ export FISCAL_START_MONTH=1
 # Vision チェック（E2, E5, E6）を使う場合
 export ANTHROPIC_API_KEY=<Anthropic API Key>
 
+# E6 で国税庁 Web-API を呼ぶ場合（未設定だと登録番号のある取引は「確認不能」として warning）
+# アプリケーション ID は国税庁に申請して発行を受ける: https://www.invoice-kohyo.nta.go.jp/web-api/index.html
+export NTA_APP_ID=<国税庁 Web-API アプリケーション ID>
+
 # E2 のレシート PDF 置き場（--vision と併用。未指定だと E2 は実行されない）
 export RECEIPT_DIR=./receipts
 

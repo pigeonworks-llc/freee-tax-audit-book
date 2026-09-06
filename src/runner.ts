@@ -62,6 +62,8 @@ export interface AuditDeps {
   /** E5 の除外設定。未指定なら除外なし（従来どおり）。 */
   duplicateOptions?: DuplicateCheckOptions;
   httpClient?: typeof fetch;
+  /** 国税庁 Web-API のアプリケーション ID。未設定なら E6 は登録番号を「確認不能」として報告する。 */
+  ntaAppId?: string;
 }
 
 export interface AuditOutput {
@@ -328,6 +330,9 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
             regNumber,
             issueDate: deal.issue_date,
             amount: deal.amount,
+            vendorName: ocr?.vendor ?? null,
+            // OCR 応答を JSON として読めなかった場合は「登録番号なし」ではなく読取失敗
+            ocrFailed: ocr === null,
           });
         } catch (err: unknown) {
           console.error(`[tax-audit] OCR failed for deal ${deal.id}: ${err instanceof Error ? err.message : err}`);
@@ -336,12 +341,16 @@ export async function runAudit(deps: AuditDeps): Promise<AuditOutput> {
             regNumber: null,
             issueDate: deal.issue_date,
             amount: deal.amount,
+            ocrFailed: true,
           });
         }
       }
 
       if (invoiceEntries.length > 0) {
-        invoiceResult = await checkInvoiceRegistration(invoiceEntries, invoiceCache, deps.httpClient);
+        invoiceResult = await checkInvoiceRegistration(invoiceEntries, invoiceCache, {
+          appId: deps.ntaAppId,
+          httpClient: deps.httpClient,
+        });
         console.error(`[tax-audit] Invoice check: ${invoiceResult.severity}`);
       }
     } finally {
