@@ -10,7 +10,10 @@ export interface ReceiptOCR {
 
 export interface DealWithOCR {
   deal: Deal;
-  ocr: ReceiptOCR | null;
+  /** 取引に添付された証憑ごとの読取結果。読取失敗（応答を JSON として解釈できない等）は null。 */
+  ocrs: Array<ReceiptOCR | null>;
+  /** 1 回の実行あたりの上限により今回は読まなかった証憑の数。 */
+  skipped: number;
 }
 
 /** Minimal interface for Anthropic message creation (testable). */
@@ -55,67 +58,109 @@ export async function ocrReceipt(client: AnthropicLike, pdfContent: Buffer): Pro
     ],
   });
 
-  const text = response.content[0].type === "text" ? (response.content[0].text ?? "") : "";
+  const text = response.content[0]?.type === "text" ? (response.content[0].text ?? "") : "";
   return parseVisionResponse(text);
 }
 
-/** Parse JSON from Vision API response text. */
+/**
+ * Parse JSON from Vision API response text.
+ * 形が ReceiptOCR として読めないもの（配列、数値以外の amount 等）は null＝読取失敗。
+ */
 export function parseVisionResponse(text: string): ReceiptOCR | null {
-  try {
-    return JSON.parse(text) as ReceiptOCR;
-  } catch {
-    const match = /```(?:json)?\s*\n?([\s\S]*?)\n?```/.exec(text);
-    if (match) {
-      try {
-        return JSON.parse(match[1]) as ReceiptOCR;
-      } catch {
-        return null;
-      }
+  const candidates = [text];
+  const fenced = /```(?:json)?\s*\n?([\s\S]*?)\n?```/.exec(text);
+  if (fenced) candidates.push(fenced[1]);
+  for (const c of candidates) {
+    try {
+      const parsed = JSON.parse(c) as unknown;
+      const ocr = toReceiptOCR(parsed);
+      if (ocr) return ocr;
+    } catch {
+      // try next candidate
     }
-    return null;
   }
+  return null;
 }
 
-/** E2: Check receipt OCR data against deal amounts/dates. */
+function toReceiptOCR(v: unknown): ReceiptOCR | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const amount = typeof o.amount === "number" && Number.isFinite(o.amount) ? Math.round(o.amount) : null;
+  const date = typeof o.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.date) ? o.date : null;
+  const vendor = typeof o.vendor === "string" && o.vendor.trim() ? o.vendor : null;
+  const registration_number = typeof o.registration_number === "string" ? o.registration_number : null;
+  return { amount, date, vendor, registration_number };
+}
+
+const DATE_TOLERANCE_DAYS = 3;
+
+/**
+ * E2: Check receipt OCR data against deal amounts/dates.
+ *
+ * 合格 / 不一致 / 読取失敗 / 未検証 を区別する。読取失敗と未検証は「問題なし」に
+ * 含めず、summary に件数を出し severity を warning 以上にする。
+ */
 export function checkReceiptConsistency(pairs: DealWithOCR[]): AuditResult {
   const items: AuditItem[] = [];
+  let verified = 0;
+  let unreadable = 0;
+  let unverified = 0;
 
-  for (const { deal, ocr } of pairs) {
-    if (!ocr) continue;
+  for (const { deal, ocrs, skipped } of pairs) {
+    const base = { id: deal.id, date: deal.issue_date, amount: deal.amount };
+    const readable = ocrs.filter((o): o is ReceiptOCR => o !== null);
 
-    if (ocr.amount !== null && ocr.amount !== deal.amount) {
+    if (readable.length === 0) {
+      if (ocrs.length > 0) {
+        unreadable++;
+        items.push({ ...base, level: "warning", reason: `証憑 ${ocrs.length} 件の読取に失敗（金額・日付を確認できず）` });
+      } else if (skipped > 0) {
+        unverified++;
+      }
+      continue;
+    }
+    verified++;
+    if (skipped > 0) {
+      items.push({ ...base, level: "info", reason: `証憑 ${skipped} 件は上限により未読（次回実行で継続）` });
+    }
+
+    const amounts = readable.map((o) => o.amount).filter((a): a is number => a !== null);
+    if (amounts.length > 0 && !amounts.includes(deal.amount)) {
+      const nearest = amounts.reduce((p, c) => (Math.abs(c - deal.amount) < Math.abs(p - deal.amount) ? c : p));
       items.push({
-        id: deal.id,
-        date: deal.issue_date,
-        amount: deal.amount,
-        description: `freee: ¥${deal.amount.toLocaleString()} vs レシート: ¥${ocr.amount.toLocaleString()}`,
+        ...base,
+        description: `freee: ¥${deal.amount.toLocaleString()} vs レシート: ${amounts.map((a) => `¥${a.toLocaleString()}`).join(" / ")}`,
         level: "error",
-        reason: `金額不一致 (差額: ¥${Math.abs(deal.amount - ocr.amount).toLocaleString()})`,
+        reason: `金額不一致 (差額: ¥${Math.abs(deal.amount - nearest).toLocaleString()})`,
       });
     }
 
-    if (ocr.date !== null) {
-      const dealDate = new Date(deal.issue_date);
-      const ocrDate = new Date(ocr.date);
-      const diffDays = Math.abs((dealDate.getTime() - ocrDate.getTime()) / 86_400_000);
-      if (diffDays > 3) {
+    const dates = readable.map((o) => o.date).filter((d): d is string => d !== null);
+    if (dates.length > 0) {
+      const dealTime = new Date(deal.issue_date).getTime();
+      const diffs = dates.map((d) => Math.abs((dealTime - new Date(d).getTime()) / 86_400_000));
+      const best = Math.min(...diffs);
+      if (best > DATE_TOLERANCE_DAYS) {
         items.push({
-          id: deal.id,
-          date: deal.issue_date,
-          amount: deal.amount,
-          description: `freee: ${deal.issue_date} vs レシート: ${ocr.date}`,
+          ...base,
+          description: `freee: ${deal.issue_date} vs レシート: ${dates.join(" / ")}`,
           level: "warning",
-          reason: `日付不一致 (${Math.round(diffDays)}日差)`,
+          reason: `日付不一致 (${Math.round(best)}日差)`,
         });
       }
     }
   }
 
-  const hasError = items.some((i) => i.level === "error");
-  return {
-    check: "receipt_consistency",
-    severity: items.length === 0 ? "pass" : hasError ? "error" : "warning",
-    summary: items.length === 0 ? "レシートと取引の整合性に問題なし" : `${items.length} 件の整合性問題を検出`,
-    items,
-  };
+  const errors = items.filter((i) => i.level === "error").length;
+  const mismatches = items.filter((i) => i.level === "error" || (i.level === "warning" && i.reason?.startsWith("日付"))).length;
+  const severity = errors > 0 ? "error" : unreadable > 0 || unverified > 0 || mismatches > 0 ? "warning" : "pass";
+  const coverage = `対象 ${pairs.length} 件: 検証 ${verified} 件、読取失敗 ${unreadable} 件、未検証 ${unverified} 件`;
+  const summary =
+    mismatches > 0
+      ? `${mismatches} 件の整合性問題を検出（${coverage}）`
+      : unreadable > 0 || unverified > 0
+        ? `検証済み分に不一致なし。ただし確認できていない取引あり（${coverage}）`
+        : `レシートと取引の整合性に問題なし（${coverage}）`;
+
+  return { check: "receipt_consistency", severity, summary, items };
 }
