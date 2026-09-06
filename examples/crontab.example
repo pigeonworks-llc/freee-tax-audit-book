@@ -5,15 +5,23 @@
 
 # --- run-tax-audit.sh (example) ---
 # #!/usr/bin/env bash
-# set -euo pipefail
+# set -uo pipefail
 # cd /path/to/freee-tax-audit-book
 # export FREEE_COMPANY_ID=...
 # export FREEE_CLIENT_ID=...
 # export FREEE_CLIENT_SECRET=...   # prefer env from a secret manager, not this file
-# export FREEE_TOKEN_PATH=$HOME/.config/freee/token.json
+# export FREEE_TOKEN_PATH=$HOME/.config/freee/token.json   # 更新後のトークンはここに書き戻される
+# export FISCAL_START_MONTH=7      # 事業所の期首月
 # export ANTHROPIC_API_KEY=...     # optional; needed for --vision
+# export NTA_APP_ID=...            # optional; 国税庁 Web-API (E6)
 # export DUP_CACHE_PATH=$HOME/.cache/tax-audit/duplicate-check.db
-# export RECEIPT_DIR=$HOME/receipts/incoming
+# export OCR_CACHE_PATH=$HOME/.cache/tax-audit/receipt-ocr.db
+# export INVOICE_CACHE_PATH=$HOME/.cache/tax-audit/invoice-check.db
+# export AUDIT_JSON_DIR=$HOME/.local/share/tax-audit/results   # --annual の入力
 # pnpm install --frozen-lockfile
 # pnpm build
-# node dist/src/index.js "tax-audit-$(date +%Y-%m).md" --monthly --vision
+# # 前月を締める。終了コード 0=指摘なし / 2=error 指摘あり / 1=実行失敗
+# node dist/src/index.js "$HOME/reports/tax-audit-$(date -d 'last month' +%Y-%m).md" --previous --vision
+# rc=$?
+# if [ "$rc" -eq 1 ]; then echo "tax-audit FAILED" | mail -s "tax-audit failed" you@example.com; fi
+# exit "$rc"

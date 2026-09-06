@@ -1,16 +1,31 @@
 # Example GitHub Actions workflow for monthly tax-audit.
 # Place under .github/workflows/ after adapting secrets and paths.
+#
 # Secrets to configure in the repository:
 #   FREEE_COMPANY_ID, FREEE_CLIENT_ID, FREEE_CLIENT_SECRET
-#   FREEE_TOKEN_JSON (optional: contents of token file)
-#   ANTHROPIC_API_KEY (optional: for --vision)
-#   GOOGLE_CHAT_WEBHOOK (optional)
+#   FREEE_TOKEN_JSON   initial contents of the token file (from oauth-setup)
+#   ANTHROPIC_API_KEY  optional: for --vision (E2 / E5 精査 / E6)
+#   NTA_APP_ID         optional: 国税庁 Web-API アプリケーション ID (E6)
+#   GOOGLE_CHAT_WEBHOOK optional
+#   GH_PAT_STATE       PAT with repo scope on the state repository (see below)
+#
+# 継続保存 (状態) について:
+#   freee は refresh_token をリフレッシュのたびに回転させる。Secret に入れた
+#   初回トークンを毎回書き出すだけだと、1 回目のリフレッシュ後に Secret 側の
+#   refresh_token は無効になり、2 回目以降の実行で認証に失敗する。
+#   また判定キャッシュ (重複 / OCR / 登録番号) と月次結果 JSON は年次集約と
+#   費用抑制のために実行をまたいで残す必要がある。
+#   この例では private な「状態リポジトリ」(STATE_REPO) に
+#     state/token.json            最新トークン (実行後に書き戻す)
+#     state/cache/*.db            判定キャッシュ
+#     state/results/*.json        月次結果 (--annual の入力)
+#   を保存する。GitHub Secrets の更新 API や別のシークレット保管先に置き換えてもよい。
 
 name: monthly-tax-audit
 
 on:
   schedule:
-    # 1st of each month 00:00 UTC (~09:00 JST). Adjust as needed.
+    # 1st of each month 00:00 UTC (~09:00 JST). 前月分を --previous で締める。
     - cron: "0 0 1 * *"
   workflow_dispatch:
     inputs:
@@ -19,12 +34,24 @@ on:
         type: boolean
         default: false
 
+env:
+  STATE_REPO: your-org/tax-audit-state   # private repository for token / cache / results
+
 jobs:
   tax-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # 終了コード: 0 = 指摘なし, 2 = error 指摘あり, 1 = 実行失敗
+    # error 指摘 (2) は「要対応」であって処理失敗ではないので、ジョブは成功扱いにし通知で伝える。
+    # 実行失敗 (1) と成果物欠落はジョブを失敗させる。
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.STATE_REPO }}
+          token: ${{ secrets.GH_PAT_STATE }}
+          path: state
 
       - uses: pnpm/action-setup@v4
         with:
@@ -40,53 +67,88 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Write freee token file
+      - name: Prepare token file
         env:
           FREEE_TOKEN_JSON: ${{ secrets.FREEE_TOKEN_JSON }}
         run: |
-          mkdir -p "$HOME/.config/freee"
-          if [ -n "$FREEE_TOKEN_JSON" ]; then
-            printf '%s' "$FREEE_TOKEN_JSON" > "$HOME/.config/freee/token.json"
-            chmod 600 "$HOME/.config/freee/token.json"
+          mkdir -p state/cache state/results
+          # 状態リポジトリに最新トークンがあればそれを優先し、無ければ Secret の初回トークンを使う
+          if [ ! -s state/token.json ]; then
+            if [ -z "$FREEE_TOKEN_JSON" ]; then
+              echo "::error::No token: set FREEE_TOKEN_JSON or commit state/token.json" >&2
+              exit 1
+            fi
+            printf '%s' "$FREEE_TOKEN_JSON" > state/token.json
           fi
+          chmod 600 state/token.json
 
       - name: Run tax audit
+        id: audit
         env:
           FREEE_COMPANY_ID: ${{ secrets.FREEE_COMPANY_ID }}
           FREEE_CLIENT_ID: ${{ secrets.FREEE_CLIENT_ID }}
           FREEE_CLIENT_SECRET: ${{ secrets.FREEE_CLIENT_SECRET }}
-          FREEE_TOKEN_PATH: ${{ runner.temp }}/../.config/freee/token.json
+          FREEE_TOKEN_PATH: ${{ github.workspace }}/state/token.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          RECEIPT_DIR: receipts/incoming
-          DUP_CACHE_PATH: ${{ runner.temp }}/duplicate-check.db
+          NTA_APP_ID: ${{ secrets.NTA_APP_ID }}
+          FISCAL_START_MONTH: "7"        # 事業所の期首月に合わせる
+          DUP_CACHE_PATH: ${{ github.workspace }}/state/cache/duplicate-check.db
+          OCR_CACHE_PATH: ${{ github.workspace }}/state/cache/receipt-ocr.db
+          INVOICE_CACHE_PATH: ${{ github.workspace }}/state/cache/invoice-check.db
+          AUDIT_JSON_DIR: ${{ github.workspace }}/state/results
         run: |
-          export FREEE_TOKEN_PATH="${HOME}/.config/freee/token.json"
+          set +e
           EXTRA=""
-          if [ "${{ inputs.full_check }}" = "true" ]; then
-            EXTRA="--full-check"
-          fi
-          # Entry path may be dist/src/index.js or dist/index.js depending on package layout.
-          node dist/src/index.js tax-audit-report.md --monthly --vision $EXTRA || true
+          if [ -n "$ANTHROPIC_API_KEY" ]; then EXTRA="$EXTRA --vision"; fi
+          if [ "${{ inputs.full_check }}" = "true" ]; then EXTRA="$EXTRA --full-check"; fi
+          node dist/src/index.js tax-audit-report.md --previous $EXTRA
+          RC=$?
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
+          case "$RC" in
+            0) echo "audit: no findings" ;;
+            2) echo "::warning::audit found error-level items (see report)" ;;
+            *) echo "::error::audit run failed (exit $RC)" ; exit "$RC" ;;
+          esac
+          test -s tax-audit-report.md || { echo "::error::report missing" >&2; exit 1; }
+
+      - name: Persist token, caches and results
+        if: always()
+        run: |
+          cd state
+          git config user.name "tax-audit-bot"
+          git config user.email "tax-audit-bot@users.noreply.github.com"
+          git add token.json cache results
+          git commit -m "tax-audit: state after run ${{ github.run_id }}" || echo "no state change"
+          git push
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tax-audit-report
-          path: tax-audit-report.md
-          if-no-files-found: ignore
+          path: |
+            tax-audit-report.md
+            state/results/audit-results-*.json
+          if-no-files-found: error
 
       - name: Notify Google Chat (optional)
         if: always() && env.GOOGLE_CHAT_WEBHOOK != ''
         env:
           GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+          RC: ${{ steps.audit.outputs.rc }}
         run: |
+          case "$RC" in
+            0) STATUS="指摘なし" ;;
+            2) STATUS="要対応の指摘あり" ;;
+            *) STATUS="実行失敗 (exit ${RC:-?})" ;;
+          esac
           if [ ! -f tax-audit-report.md ]; then
             SUMMARY="tax-audit-report.md missing"
           else
             SUMMARY=$(head -n 15 tax-audit-report.md)
           fi
-          jq -n --arg t "[tax-audit] monthly run
-${SUMMARY}" '{text: $t}' \
+          jq -n --arg t "[tax-audit] monthly run: ${STATUS}
+${SUMMARY}
+${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" '{text: $t}' \
             | curl -sS -X POST "$GOOGLE_CHAT_WEBHOOK" \
                 -H 'Content-Type: application/json' -d @-
