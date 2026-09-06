@@ -224,14 +224,30 @@ describe("resolveDomesticTaxCodes", () => {
       { code: 1, name: "課税売上 10%" },
       { code: 21, name: "課税仕入 10%" },
       { code: 22, name: "課税仕入 8%（軽減）" },
-      { code: 136, name: "対象外" },
+      { code: 50, name: "対象外" },
       { code: 99, name: "課対仕入 10%" },
     ]);
     expect(codes.has(21)).toBe(true);
     expect(codes.has(22)).toBe(true);
     expect(codes.has(99)).toBe(true);
     expect(codes.has(1)).toBe(false);
-    expect(codes.has(136)).toBe(false);
+    expect(codes.has(50)).toBe(false);
+  });
+
+  it("includes 共対仕入 and excludes 非対仕入 / 輸税 using the official freee code names", () => {
+    const codes = resolveDomesticTaxCodes([
+      { code: 136, name: "課対仕入10%" },
+      { code: 137, name: "非対仕入10%" },
+      { code: 138, name: "共対仕入10%" },
+      { code: 139, name: "課対輸税10%" },
+      { code: 163, name: "課対仕入8%（軽）" },
+    ]);
+    expect([...codes].sort((a, b) => a - b)).toEqual([136, 138, 163]);
+  });
+
+  it("fallback codes include the official 課対仕入10% (136)", () => {
+    expect(FALLBACK_DOMESTIC_TAX_CODES.has(136)).toBe(true);
+    expect(FALLBACK_DOMESTIC_TAX_CODES.has(138)).toBe(true);
   });
 
   it("falls back when no purchase codes match", () => {
@@ -388,7 +404,57 @@ describe("E5: checkDuplicateDeals options", () => {
 
   it("still groups deals when only one side has a partner", () => {
     const deals = [makeDeal({ id: 1, amount: 5000, partner_id: 10 }), makeDeal({ id: 2, amount: 5000 })];
-    expect(checkDuplicateDeals(deals).severity).toBe("pass");
+    const result = checkDuplicateDeals(deals);
+    expect(result.severity).toBe("warning");
+    expect(result.items[0].ids).toEqual([1, 2]);
+  });
+
+  it("falls back to the bank statement memo when the description is blank, not only when it is absent", () => {
+    const withDesc = (id: number, description: string) =>
+      makeDeal({
+        id,
+        amount: 800,
+        details: [{ id, account_item_id: 100, account_item_name: "旅費交通費", tax_code: 21, amount: 800, vat: 72, description }],
+      });
+    const result = checkDuplicateDeals([withDesc(1, ""), withDesc(2, "  ")], {
+      walletTxnDescriptions: new Map([
+        [1, "LUUP, INC."],
+        [2, "Ｓ．ＲＩＤＥ"],
+      ]),
+    });
+    expect(result.severity).toBe("pass");
+  });
+});
+
+describe("E1: per-detail exemption", () => {
+  const rules: ReceiptExemptionRules = { exemptAccountItems: ["支払手数料"] };
+  const det = (id: number, name: string, amount: number) => ({
+    id,
+    account_item_id: id,
+    account_item_name: name,
+    tax_code: 21,
+    amount,
+    vat: Math.floor(amount / 11),
+  });
+
+  it("does not exempt a deal that mixes an exempt detail with a receipt-required detail", () => {
+    const deal = makeDeal({ id: 1, amount: 100330, receipts: undefined, details: [det(1, "消耗品費", 100000), det(2, "支払手数料", 330)] });
+    expect(isReceiptExempt(deal, rules)).toBeNull();
+    const result = checkReceiptCoverage([deal], rules);
+    expect(result.severity).toBe("warning");
+  });
+
+  it("exempts a deal only when every detail is exempt", () => {
+    const deal = makeDeal({ id: 1, amount: 660, receipts: undefined, details: [det(1, "支払手数料", 330), det(2, "支払手数料", 330)] });
+    expect(isReceiptExempt(deal, rules)).toContain("勘定科目免除");
+  });
+
+  it("applies a bank-statement memo exemption only to single-detail deals", () => {
+    const memoRules: ReceiptExemptionRules = { ...rules, walletTxnDescriptions: new Map([[1, "ﾌﾘｺﾐﾃｽｳﾘﾖｳ"]]), exemptDescriptionPatterns: ["ﾌﾘｺﾐﾃｽｳﾘﾖｳ"] };
+    const single = makeDeal({ id: 1, amount: 330, receipts: undefined, details: [det(1, "雑費", 330)] });
+    expect(isReceiptExempt(single, memoRules)).toContain("摘要免除");
+    const multi = makeDeal({ id: 1, amount: 100330, receipts: undefined, details: [det(1, "消耗品費", 100000), det(2, "雑費", 330)] });
+    expect(isReceiptExempt(multi, memoRules)).toBeNull();
   });
 });
 

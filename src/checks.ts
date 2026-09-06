@@ -178,7 +178,43 @@ export function enrichAccountItemNames(deals: Deal[], accountItems: AccountItem[
   return deals;
 }
 
-/** Check if a deal is exempt from receipt requirement. Returns reason or null. */
+/**
+ * 明細 1 行が証憑チェックの対象外かを判定する。理由文字列か null。
+ * 「監査ツールの対象外」であって「税務上、保存が不要」の意味ではない。
+ */
+export function isDetailExempt(deal: Deal, det: Deal["details"][number], rules: ReceiptExemptionRules): string | null {
+  if (rules.exemptAccountCategories?.length && rules.accountCategories) {
+    const category = rules.accountCategories.get(det.account_item_id);
+    if (category && rules.exemptAccountCategories.includes(category)) {
+      return `科目区分免除（${category}）`;
+    }
+  }
+  if (rules.exemptAccountItems) {
+    const name = det.account_item_name;
+    if (name && rules.exemptAccountItems.includes(name)) {
+      return `勘定科目免除（${name}）`;
+    }
+    const desc = det.description;
+    if (desc) {
+      const match = rules.exemptAccountItems.find((item) => desc.includes(item));
+      if (match) return `明細免除（${match}）`;
+    }
+  }
+  if (rules.exemptDescriptionPatterns?.length && det.description) {
+    const match = rules.exemptDescriptionPatterns.find((pattern) => det.description?.includes(pattern));
+    if (match) return `摘要免除（${match}）`;
+  }
+  return null;
+}
+
+/**
+ * Check if a deal is exempt from receipt requirement. Returns reason or null.
+ *
+ * 取引全体の免除は、金額条件か、**すべての明細**が免除対象のときだけ。
+ * 免除明細と対象明細が混在する取引（例: 消耗品費 + 支払手数料）は、対象明細が
+ * 残るので免除しない。銀行明細の摘要（取引単位の情報）による免除は、明細が
+ * 1 行のときだけ適用する。
+ */
 export function isReceiptExempt(deal: Deal, rules: ReceiptExemptionRules): string | null {
   if (rules.zeroAmountThreshold != null && deal.amount <= rules.zeroAmountThreshold) {
     return `少額（¥${deal.amount}）`;
@@ -186,52 +222,34 @@ export function isReceiptExempt(deal: Deal, rules: ReceiptExemptionRules): strin
   if (rules.smallAmountThreshold != null && deal.amount < rules.smallAmountThreshold) {
     return `少額特例（< ¥${rules.smallAmountThreshold.toLocaleString()}）`;
   }
-  if (rules.exemptAccountCategories?.length && rules.accountCategories) {
-    for (const det of deal.details) {
-      const category = rules.accountCategories.get(det.account_item_id);
-      if (category && rules.exemptAccountCategories.includes(category)) {
-        return `科目区分免除（${category}）`;
-      }
-    }
-  }
 
-  if (rules.exemptAccountItems) {
-    // Check account_item_name and description across all details
-    for (const det of deal.details) {
-      const name = det.account_item_name;
-      if (name && rules.exemptAccountItems.includes(name)) {
-        return `勘定科目免除（${name}）`;
-      }
-      const desc = det.description;
-      if (desc) {
-        const match = rules.exemptAccountItems.find((item) => desc.includes(item));
-        if (match) {
-          return `明細免除（${match}）`;
-        }
-      }
+  const reasons: string[] = [];
+  for (const det of deal.details) {
+    const r = isDetailExempt(deal, det, rules);
+    if (!r) {
+      // 対象明細が残る → 取引は免除しない
+      reasons.length = 0;
+      break;
     }
-    // Check wallet_txn description (bank statement memo, often half-width katakana)
+    if (!reasons.includes(r)) reasons.push(r);
+  }
+  if (deal.details.length > 0 && reasons.length > 0) return reasons.join("・");
+
+  // 明細単位で判定できない銀行明細の摘要は、単一明細の取引にだけ効かせる
+  if (deal.details.length <= 1) {
     const wtDesc = rules.walletTxnDescriptions?.get(deal.id);
     if (wtDesc) {
       const fullDesc = halfToFullKana(wtDesc);
-      const match = rules.exemptAccountItems.find((item) => wtDesc.includes(item) || fullDesc.includes(item));
-      if (match) {
-        return `銀行明細免除（${match}）`;
+      if (rules.exemptAccountItems) {
+        const match = rules.exemptAccountItems.find((item) => wtDesc.includes(item) || fullDesc.includes(item));
+        if (match) return `銀行明細免除（${match}）`;
+      }
+      if (rules.exemptDescriptionPatterns?.length) {
+        const match = rules.exemptDescriptionPatterns.find((p) => wtDesc.includes(p) || fullDesc.includes(p));
+        if (match) return `摘要免除（${match}）`;
       }
     }
   }
-
-  if (rules.exemptDescriptionPatterns?.length) {
-    const texts = deal.details.map((det) => det.description ?? "");
-    const wtDesc = rules.walletTxnDescriptions?.get(deal.id);
-    if (wtDesc) texts.push(wtDesc, halfToFullKana(wtDesc));
-    for (const pattern of rules.exemptDescriptionPatterns) {
-      if (texts.some((t) => t.includes(pattern))) {
-        return `摘要免除（${pattern}）`;
-      }
-    }
-  }
-
   return null;
 }
 
@@ -410,7 +428,7 @@ export interface DuplicateCheckOptions {
  */
 export function checkDuplicateDeals(deals: Deal[], options: DuplicateCheckOptions = {}): AuditResult {
   const { excludeAccountItems, minAmount, walletTxnDescriptions, level = DEFAULT_DUPLICATE_LEVEL } = options;
-  const groups = new Map<string, number[]>();
+  const groups = new Map<string, Array<{ id: number; partner?: number }>>();
   let excludedCount = 0;
 
   for (const d of deals) {
@@ -426,18 +444,23 @@ export function checkDuplicateDeals(deals: Deal[], options: DuplicateCheckOption
       }
     }
 
-    const rawDesc = d.details[0]?.description ?? walletTxnDescriptions?.get(d.id) ?? d.details[0]?.account_item_name ?? "";
+    // 空文字・空白だけの説明は「無い」扱いにして口座明細の摘要へ落とす
+    const rawDesc = firstNonBlank(
+      d.details[0]?.description,
+      walletTxnDescriptions?.get(d.id),
+      d.details[0]?.account_item_name,
+    );
     const desc = normalizeForMatching(rawDesc);
-    // partner は両方に設定されている場合だけ効かせる（片方だけなら従来どおり日付+金額+摘要で判定）
-    const partner = d.partner_id ?? "";
-    const key = `${d.issue_date}|${d.amount}|${d.type}|${desc}|${partner}`;
-    const ids = groups.get(key) ?? [];
-    ids.push(d.id);
-    groups.set(key, ids);
+    const key = `${d.issue_date}|${d.amount}|${d.type}|${desc}`;
+    const bucket = groups.get(key) ?? [];
+    bucket.push({ id: d.id, partner: d.partner_id });
+    groups.set(key, bucket);
   }
 
   const dupes: AuditItem[] = [];
-  for (const [key, ids] of groups) {
+  for (const [key, members] of groups) {
+    // partner は両方に設定されている場合だけ効かせる（片方だけなら日付+金額+摘要で判定）
+    const ids = splitByPartner(members);
     if (ids.length < 2) continue;
     const [date, amount, , desc] = key.split("|");
     dupes.push({
@@ -464,12 +487,45 @@ export function checkDuplicateDeals(deals: Deal[], options: DuplicateCheckOption
   };
 }
 
+function firstNonBlank(...values: Array<string | undefined>): string {
+  return values.find((v) => v != null && v.trim() !== "") ?? "";
+}
+
+/**
+ * 同じキーの取引群から、取引先が「両方に設定され、かつ異なる」ペアを別群に分ける。
+ * 取引先未設定の取引は、どの取引先とも同じ群に残る（本文 第9章の条件）。
+ * 戻り値は最大の群の ID 一覧。
+ */
+function splitByPartner(members: Array<{ id: number; partner?: number }>): number[] {
+  const withoutPartner = members.filter((m) => m.partner == null).map((m) => m.id);
+  const byPartner = new Map<number, number[]>();
+  for (const m of members) {
+    if (m.partner == null) continue;
+    const ids = byPartner.get(m.partner) ?? [];
+    ids.push(m.id);
+    byPartner.set(m.partner, ids);
+  }
+  if (byPartner.size === 0) return withoutPartner;
+  let best: number[] = [];
+  for (const ids of byPartner.values()) {
+    const group = [...ids, ...withoutPartner].sort((a, b) => a - b);
+    if (group.length > best.length) best = group;
+  }
+  return best;
+}
+
 /**
  * Fallback domestic taxable-purchase codes when company tax list is unavailable.
  * These are **examples** only; prefer resolveDomesticTaxCodes() from
  * GET /api/1/taxes/companies/{company_id}.
  */
 export const FALLBACK_DOMESTIC_TAX_CODES = new Set([
+  // freee 公式 税区分コード一覧 (developer.freee.co.jp/news/1434)
+  136, // 課対仕入10%
+  138, // 共対仕入10%
+  163, // 課対仕入8%（軽）
+  165, // 共対仕入8%（軽）
+  // 旧コード体系・例示（事業所によって異なる）
   2, // 課税仕入（税率不明）
   3, // 課税仕入（税率不明）
   21, // 課税仕入 10%
@@ -488,8 +544,9 @@ export function resolveDomesticTaxCodes(taxes: CompanyTax[]): Set<number> {
   const codes = new Set<number>();
   for (const t of taxes) {
     const name = `${t.name_ja ?? ""} ${t.name}`;
-    // freee UI/API may use 課税仕入 or 課対仕入; exclude sales-side codes
-    if (/(課税?仕入|課対仕入)/.test(name) && !/売上/.test(name)) {
+    // 国内の仕入税額控除対象: 課税仕入 / 課対仕入 / 共対仕入 (課税売上対応・共通対応)。
+    // 非対仕入 (非課税売上対応) と輸入・売上側は除く
+    if (/(課税?仕入|課対仕入|共対仕入)/.test(name) && !/売上|輸税|輸入|非対/.test(name)) {
       codes.add(t.code);
     }
   }
